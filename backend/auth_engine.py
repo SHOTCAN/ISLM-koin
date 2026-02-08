@@ -1,7 +1,7 @@
 import random
 import time
 import requests
-from config import Config
+from backend.config import Config
 
 class AuthEngine:
     """
