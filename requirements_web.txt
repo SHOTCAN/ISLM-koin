@@ -1,0 +1,10 @@
+customtkinter
+matplotlib
+numpy
+requests
+python-dotenv
+pandas
+plotly
+streamlit
+watchdog
+winsound; sys_platform == 'win32'
