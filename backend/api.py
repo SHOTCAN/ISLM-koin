@@ -1,4 +1,9 @@
-import hmac, hashlib, time, urllib.parse, requests
+import hmac
+import hashlib
+import time
+import urllib.parse
+import random
+import requests
 
 class IndodaxAPI:
     def __init__(self, api_key, secret_key):
@@ -111,20 +116,17 @@ class IndodaxAPI:
             pass
             
         # --- FALLBACK: SYNTHETIC DATA (Agar UI Tidak Rusak) ---
-        # Jika API gagal, kita buat 1 fake candle dari harga terakhir (jika ada)
-        # Ini penting biar 'Interactive Bot' & 'Advanced Analysis' tidak error
-        # --- FALLBACK: SYNTHETIC DATA (Agar UI Tidak Rusak) ---
-        # Generate 100 dummy candles for indicators (RSI needs 14, BB needs 20)
+        import random as _random
         fallback = []
         base_price = 376
         for i in range(100):
-            base_price += random.uniform(-2, 2)
+            base_price += _random.uniform(-2, 2)
             fallback.append({
                 'time': int(time.time()) - (100-i)*900, # 15 min candles
                 'open': base_price,
                 'high': base_price + 2,
                 'low': base_price - 2,
-                'close': base_price + random.uniform(-1, 1),
-                'vol': 1000 + random.randint(0, 500)
+                'close': base_price + _random.uniform(-1, 1),
+                'vol': 1000 + _random.randint(0, 500)
             })
         return fallback

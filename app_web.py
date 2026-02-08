@@ -4,7 +4,14 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from backend.api import IndodaxAPI
-from backend.core_logic import MarketProjector, FundamentalEngine, QuantAnalyzer # Reuse existing logic
+from backend.core_logic import (
+    MarketProjector,
+    FundamentalEngine,
+    QuantAnalyzer,
+    CandleSniper,
+    WhaleTracker,
+    AISignalEngine,
+)
 from backend.auth_engine import AuthEngine
 from backend.telegram_bot import TelegramBot
 from backend.config import Config
@@ -39,21 +46,39 @@ class BackgroundMonitor:
                 
                 # 1. Fetch Real Data
                 ticker = api.get_price('islmidr')
+                if not ticker.get('success'):
+                    time.sleep(60)
+                    continue
                 price = ticker['last']
                 
-                # 2. Check RSI for Signal
+                # 2. Unified AI Signal (RSI, MACD, BB, Candle, Whale, Fundamental)
                 candles = api.get_kline('islmidr', '15')
                 if candles:
+                    if last_price == 0:
+                        last_price = price
                     closes = pd.DataFrame(candles)['close'].values
                     rsi = QuantAnalyzer.calculate_rsi(closes)
-                    signal = "STRONG BUY 🚀" if rsi < 30 else "SELL ⚠️" if rsi > 70 else "HOLD 🤝"
-                    
-                    # 3. Send Periodic Update (Every 1 Hour or if Big Move)
-                    # For demo/testing: We can make it more frequent or on-demand
-                    # Here we simulate an "Alert" rule:
-                    if abs(price - last_price) / last_price > 0.02: # 2% Move
-                         bot.send_dashboard_menu(price, (price-last_price)/last_price*100, rsi, signal)
-                         last_price = price
+                    _, _, hist = QuantAnalyzer.calculate_macd(closes)
+                    bb_upper, bb_mid, bb_lower = QuantAnalyzer.calculate_bollinger_bands(closes)
+                    depth = api.get_depth('islmidr') or {}
+                    whale_ratio = WhaleTracker.get_whale_ratio(depth.get('buy', []), depth.get('sell', []), 0.1)
+                    f_score, _ = FundamentalEngine.analyze_market_sentiment()
+                    patterns = CandleSniper.analyze_patterns(candles)
+                    bull_k = ("HAMMER", "INV. HAMMER", "BULL ENGULFING", "MORNING STAR")
+                    bear_k = ("HANGING MAN", "SHOOTING STAR", "BEAR ENGULFING", "EVENING STAR")
+                    cb = sum(1 for p in patterns if any(k in p for k in bull_k))
+                    cbe = sum(1 for p in patterns if any(k in p for k in bear_k))
+                    ai_signal = AISignalEngine.compute(
+                        rsi=rsi, macd_hist=hist, price=price, bb_mid=bb_mid,
+                        bb_upper=bb_upper, bb_lower=bb_lower,
+                        candle_bull_count=cb, candle_bear_count=cbe,
+                        whale_ratio=whale_ratio, fundamental_score=f_score,
+                    )
+                    signal = ai_signal["label"]
+                    # 3. Alert on 2% move
+                    if abs(price - last_price) / last_price > 0.02:
+                        bot.send_dashboard_menu(price, (price - last_price) / last_price * 100, rsi, signal)
+                        last_price = price
                          
             except Exception as e:
                 print(f"Bg Loop Error: {e}")
@@ -184,7 +209,7 @@ def main_dashboard():
         c1.metric("ISLM Order", f"Rp {price:,.0f}", f"{(price-low)/(high-low)*100-50:.1f}%")
         c2.metric("Bitcoin (BTC)", f"Rp {btc:,.0f}")
         c3.metric("Fundamental Score", f"{f_score}/10", f_news[:20]+"...")
-        c4.metric("AI Confidence", "Strong Buy" if f_score > 3 else "Neutral")
+        c4.metric("Sinyal AI (Unified)", ai_signal["label"], f"Confidence: {ai_signal['confidence']*100:.0f}%")
 
         # Charting (Plotly)
         st.subheader("📈 Realtime Chart (Live/Simulated)")
@@ -224,6 +249,37 @@ def main_dashboard():
         macd, sig, hist = QuantAnalyzer.calculate_macd(closes)
         stoch_k, stoch_d = QuantAnalyzer.calculate_stoch_rsi(closes)
         bb_upper, bb_mid, bb_lower = QuantAnalyzer.calculate_bollinger_bands(closes)
+
+        # Whale & Order Book
+        try:
+            depth = api.get_depth("islmidr")
+            whale_ratio = WhaleTracker.get_whale_ratio(
+                depth.get("buy", []), depth.get("sell", []), 0.1
+            )
+        except Exception:
+            whale_ratio = 0.5
+        whale_label = WhaleTracker.interpret(whale_ratio)
+
+        # Candle patterns (bull/bear count for AI)
+        candle_patterns = CandleSniper.analyze_patterns(candles) if candles else []
+        bull_keywords = ("HAMMER", "INV. HAMMER", "BULL ENGULFING", "MORNING STAR")
+        bear_keywords = ("HANGING MAN", "SHOOTING STAR", "BEAR ENGULFING", "EVENING STAR")
+        candle_bull = sum(1 for p in candle_patterns if any(k in p for k in bull_keywords))
+        candle_bear = sum(1 for p in candle_patterns if any(k in p for k in bear_keywords))
+
+        # Unified AI Signal
+        ai_signal = AISignalEngine.compute(
+            rsi=rsi,
+            macd_hist=hist,
+            price=price,
+            bb_mid=bb_mid,
+            bb_upper=bb_upper,
+            bb_lower=bb_lower,
+            candle_bull_count=candle_bull,
+            candle_bear_count=candle_bear,
+            whale_ratio=whale_ratio,
+            fundamental_score=f_score,
+        )
             
         # else:
         #    st.warning("⚠️ Data Chart belum tersedia. Indodax mungkin sedang sibuk. Coba refresh 1 menit lagi.")
@@ -234,23 +290,18 @@ def main_dashboard():
         sc1, sc2 = st.columns(2)
         if sc1.button("RAMAL 1 HARI"):
             with st.spinner("Simulating..."):
-                mp = MarketProjector()
                 prices = [c['close'] for c in candles[-100:]] if candles else [price]*100
                 vol = MarketProjector.calculate_volatility(np.array(prices))
                 drift = MarketProjector.calculate_drift(np.array(prices))
-                paths = MarketProjector.run_monte_carlo(price, vol, drift, 1440, 500)
-                target = np.percentile(paths[:,-1], 50)
-                st.success(f"Target 1 Hari: Rp {target:,.0f}")
-                
+                _, pct = MarketProjector.run_monte_carlo(price, vol, drift, 1440, 500)
+                st.success(f"Target 1 Hari: Rp {pct['p50']:,.0f} (Interval: Rp {pct['p5']:,.0f} - Rp {pct['p95']:,.0f})")
         if sc2.button("RAMAL 2 MINGGU (Ramadhan)"):
-             with st.spinner("Analisa Musiman..."):
+            with st.spinner("Analisa Musiman..."):
                 prices = [c['close'] for c in candles[-100:]] if candles else [price]*100
                 vol = MarketProjector.calculate_volatility(np.array(prices))
                 drift = MarketProjector.calculate_drift(np.array(prices))
-                # Boost drift for Ramadan
-                paths = MarketProjector.run_monte_carlo(price, vol, drift*1.2, 20160, 500)
-                target = np.percentile(paths[:,-1], 50)
-                st.success(f"Target Ramadhan: Rp {target:,.0f}")
+                _, pct = MarketProjector.run_monte_carlo(price, vol, drift * 1.2, 20160, 500)
+                st.success(f"Target Ramadhan: Rp {pct['p50']:,.0f} (Interval: Rp {pct['p5']:,.0f} - Rp {pct['p95']:,.0f})")
 
         # News Ticker
         st.info(f"📰 **NEWS FLASH:** {f_news}")
@@ -290,9 +341,11 @@ def main_dashboard():
             elif "news" in p_lower:
                 response = f"Berita: {f_news}"
             elif "analisa" in p_lower:
-                 response = f"**Analisa Teknikal:**\n- RSI: {rsi:.1f}\n- MACD: {macd:.2f}\n- Stoch: {stoch_k:.1f}\n- Posisi: {'Diatas' if price > bb_mid else 'Dibawah'} Bollinger Tengah."
+                response = f"**Analisa Teknikal:**\n- RSI: {rsi:.1f}\n- MACD: {macd:.2f}\n- Stoch: {stoch_k:.1f}\n- Posisi: {'Diatas' if price > bb_mid else 'Dibawah'} Bollinger Tengah."
+            elif "sinyal" in p_lower or "signal" in p_lower:
+                response = f"**Sinyal AI (Unified):** {ai_signal['label']} (Confidence: {ai_signal['confidence']*100:.0f}%). Whale: {whale_label}. Pola candle: {', '.join(candle_patterns) if candle_patterns else 'Tidak ada'}."
             else:
-                response = "Saya Siap! Tanya saya soal 'Harga', 'Prediksi', 'News', atau 'Analisa'."
+                response = "Saya Siap! Tanya saya soal 'Harga', 'Prediksi', 'News', 'Analisa', atau 'Sinyal'."
 
             with st.chat_message("assistant"): st.markdown(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
@@ -307,6 +360,15 @@ def main_dashboard():
             m3.metric("Stochastic", f"{stoch_k:.1f}", "Overbought" if stoch_k > 80 else "Oversold" if stoch_k < 20 else "Neutral")
             
             st.markdown("---")
+            st.write("### 🐋 Whale Tracker")
+            st.metric("Rasio Order Besar", f"{whale_ratio*100:.0f}% Buy", whale_label)
+            st.markdown("---")
+            st.write("### 🕯️ Candle Pattern Sniper")
+            if candle_patterns:
+                st.write("Pola terdeteksi: " + ", ".join(candle_patterns))
+            else:
+                st.caption("Tidak ada pola reversal/continuation terdeteksi.")
+            st.markdown("---")
             st.write("### 📐 Technical Indicators")
             if bb_upper is not None:
                 st.write(f"- **Bollinger Upper:** Rp {bb_upper:,.0f}")
@@ -318,9 +380,8 @@ def main_dashboard():
 
             if st.button("🚨 KIRIM SINYAL KE TELEGRAM"):
                 bot = TelegramBot()
-                signal = "STRONG BUY 🚀" if rsi < 30 else "SELL ⚠️" if rsi > 70 else "HOLD 🤝"
                 change = (price - closes[-2])/closes[-2]*100 if len(closes) > 1 else 0
-                success = bot.send_dashboard_menu(price, change, rsi, signal)
+                success = bot.send_dashboard_menu(price, change, rsi, ai_signal["label"])
                 if success:
                     st.success("Sinyal + Menu Terkirim ke Telegram!")
                 else:

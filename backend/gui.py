@@ -97,7 +97,7 @@ class PredictionWindow(ctk.CTkToplevel):
 
             # OPTIMIZATION: Reduced Simulations from 2000 to 1000 for speed
             sim_count = 1000 
-            paths = MarketProjector.run_monte_carlo(current_price, vol, drift, self.horizon_minutes, sim_count)
+            paths, _ = MarketProjector.run_monte_carlo(current_price, vol, drift, self.horizon_minutes, sim_count)
             final_prices = paths[:, -1]
             
             p95 = np.percentile(final_prices, 95) 
@@ -1032,7 +1032,7 @@ class ISLMApp(ctk.CTk):
              # Adjust steps for very short horizon
              steps = 10 if minutes < 10 else 100
              
-             paths = MarketProjector.run_monte_carlo(current_price, vol, drift, minutes, 500)
+             paths, _ = MarketProjector.run_monte_carlo(current_price, vol, drift, minutes, 500)
              final = paths[:, -1]
              p50 = np.percentile(final, 50)
              diff = ((p50 - current_price) / current_price) * 100
