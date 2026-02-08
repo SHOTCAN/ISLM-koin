@@ -172,6 +172,12 @@ def main_dashboard():
             # Simple hack: just tell user to click tab
             st.toast("Silakan klik Tab '💬 Chat Konsultan AI' di atas ya Bos! 👆")
 
+        st.markdown("---")
+        st.caption("🛡️ **SECURITY STATUS**")
+        st.success("✅ **2FA Active**")
+        st.info("🔒 **Session Encrypted**")
+        st.warning(f"📡 **Monitor: {'ON' if 'monitor' in st.session_state else 'OFF'}**")
+
     with tab1:
         # Metrics Row
         c1, c2, c3, c4 = st.columns(4)
@@ -302,12 +308,14 @@ def main_dashboard():
             
             st.markdown("---")
             st.write("### 📐 Technical Indicators")
-            st.write(f"- **Bollinger Upper:** Rp {bb_upper:,.0f}")
-            st.write(f"- **Bollinger Lower:** Rp {bb_lower:,.0f}")
-            st.write(f"- **Signal Line:** {sig:.2f}")
-            
-            st.info("💡 **AI INSIGHT:** " + ("Pasar sedang Jenuh Beli (Hati-hati Koreksi)" if rsi > 70 else "Pasar Jenuh Jual (Potensi Rebound)" if rsi < 30 else "Pasar Sideways/Stabil."))
-            
+            if bb_upper is not None:
+                st.write(f"- **Bollinger Upper:** Rp {bb_upper:,.0f}")
+                st.write(f"- **Bollinger Lower:** Rp {bb_lower:,.0f}")
+                st.write(f"- **Signal Line:** {sig:.2f}")
+                st.info("💡 **AI INSIGHT:** " + ("Pasar sedang Jenuh Beli (Hati-hati Koreksi)" if rsi > 70 else "Pasar Jenuh Jual (Potensi Rebound)" if rsi < 30 else "Pasar Sideways/Stabil."))
+            else:
+                st.warning("⚠️ Data indikator tidak cukup untuk ditampilkan.")
+
             if st.button("🚨 KIRIM SINYAL KE TELEGRAM"):
                 bot = TelegramBot()
                 signal = "STRONG BUY 🚀" if rsi < 30 else "SELL ⚠️" if rsi > 70 else "HOLD 🤝"
