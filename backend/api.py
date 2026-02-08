@@ -56,3 +56,37 @@ class IndodaxAPI:
             return r.json() # Returns {'buy': [], 'sell': []}
         except:
             return {'buy': [], 'sell': []}
+
+    def get_kline(self, pair='islmidr', resolution='15'):
+        # resolution mapping: '15' -> 15, '1h' -> 60, '4h' -> 240, '1d' -> 1D
+        res_map = {'15': '15', '60': '60', '240': '240', '1D': '1D'}
+        res = res_map.get(str(resolution), '1D')
+        
+        end = int(time.time())
+        start = end - (86400 * 30) # Last 30 days
+        
+        try:
+            url = f"https://indodax.com/tradingview/history"
+            params = {
+                'symbol': pair.upper(),
+                'resolution': res,
+                'from': start,
+                'to': end
+            }
+            r = requests.get(url, params=params, timeout=10)
+            data = r.json()
+            
+            if data['s'] == 'ok':
+                candles = []
+                for i in range(len(data['t'])):
+                    candles.append({
+                        'time': data['t'][i],
+                        'open': data['o'][i],
+                        'high': data['h'][i],
+                        'low': data['l'][i],
+                        'close': data['c'][i],
+                        'vol': data['v'][i]
+                    })
+                return candles
+        except: pass
+        return []

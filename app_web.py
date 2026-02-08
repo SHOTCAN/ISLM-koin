@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from backend.api import IndodaxAPI
-from backend.gui import MarketProjector, FundamentalEngine # Reuse existing logic
+from backend.core_logic import MarketProjector, FundamentalEngine # Reuse existing logic
 from backend.auth_engine import AuthEngine
 from backend.config import Config
 
