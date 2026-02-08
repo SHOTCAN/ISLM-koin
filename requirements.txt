@@ -2,3 +2,8 @@ flask
 python-dotenv
 requests
 flask-limiter
+streamlit
+pandas
+plotly
+numpy
+watchdog
