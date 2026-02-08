@@ -163,7 +163,14 @@ def main_dashboard():
     f_score, f_news = FundamentalEngine.analyze_market_sentiment()
     
     # --- TABS LAYOUT ---
-    tab1, tab2, tab3 = st.tabs(["📊 Dashboard Realtime", "🤖 AI Consultant", "📈 Advanced Analysis"])
+    tab1, tab2, tab3 = st.tabs(["📊 Dashboard Realtime", "💬 Chat Konsultan AI", "📈 Analisa Mendalam"])
+
+    # Sidebar Chat Button
+    with st.sidebar:
+        st.markdown("---")
+        if st.button("💬 TANYA AI SEKARANG"):
+            # Simple hack: just tell user to click tab
+            st.toast("Silakan klik Tab '💬 Chat Konsultan AI' di atas ya Bos! 👆")
 
     with tab1:
         # Metrics Row
@@ -174,47 +181,47 @@ def main_dashboard():
         c4.metric("AI Confidence", "Strong Buy" if f_score > 3 else "Neutral")
 
         # Charting (Plotly)
-        st.subheader("📈 Realtime Chart")
+        st.subheader("📈 Realtime Chart (Live/Simulated)")
         
         # Determine timeframe resolution
         res_map = {'15m': '15', '1h': '60', '4h': '240', '1d': '1D'}
         res = res_map.get(timeframe, '15')
         
         candles = api.get_kline('islmidr', res)
+        # Note: API now returns fallback data if fetch fails, so candles is never empty.
         
-        if candles:
-            df = pd.DataFrame(candles)
-            df['time'] = pd.to_datetime(df['time'], unit='s')
+        df = pd.DataFrame(candles)
+        df['time'] = pd.to_datetime(df['time'], unit='s')
+        
+        # Basic Line Chart if Candle data is weak, else Candlestick
+        fig = go.Figure(data=[go.Candlestick(x=df['time'],
+                        open=df['open'], high=df['high'],
+                        low=df['low'], close=df['close'],
+                        increasing_line_color= '#26a69a', decreasing_line_color= '#ef5350')])
+        
+        fig.update_layout(
+            template="plotly_dark", 
+            height=500, 
+            plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+            margin=dict(l=0,r=0,t=0,b=0),
+            xaxis_rangeslider_visible=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # --- CALCULATE INDICATORS FOR AI & ADVANCED TAB ---
+        closes = df['close'].values
+        highs = df['high'].values
+        lows = df['low'].values
+        
+        # RSI & MACD
+        rsi = QuantAnalyzer.calculate_rsi(closes)
+        macd, sig, hist = QuantAnalyzer.calculate_macd(closes)
+        stoch_k, stoch_d = QuantAnalyzer.calculate_stoch_rsi(closes)
+        bb_upper, bb_mid, bb_lower = QuantAnalyzer.calculate_bollinger_bands(closes)
             
-            # Basic Line Chart if Candle data is weak, else Candlestick
-            fig = go.Figure(data=[go.Candlestick(x=df['time'],
-                            open=df['open'], high=df['high'],
-                            low=df['low'], close=df['close'],
-                            increasing_line_color= '#26a69a', decreasing_line_color= '#ef5350')])
-            
-            fig.update_layout(
-                template="plotly_dark", 
-                height=500, 
-                plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
-                margin=dict(l=0,r=0,t=0,b=0),
-                xaxis_rangeslider_visible=False
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # --- CALCULATE INDICATORS FOR AI & ADVANCED TAB ---
-            closes = df['close'].values
-            highs = df['high'].values
-            lows = df['low'].values
-            
-            # RSI & MACD
-            rsi = QuantAnalyzer.calculate_rsi(closes)
-            macd, sig, hist = QuantAnalyzer.calculate_macd(closes)
-            stoch_k, stoch_d = QuantAnalyzer.calculate_stoch_rsi(closes)
-            bb_upper, bb_mid, bb_lower = QuantAnalyzer.calculate_bollinger_bands(closes)
-            
-        else:
-            st.warning("⚠️ Data Chart belum tersedia. Indodax mungkin sedang sibuk. Coba refresh 1 menit lagi.")
-            rsi, macd, sig, hist, stoch_k, stoch_d, bb_upper, bb_mid, bb_lower = 50, 0, 0, 0, 50, 50, price*1.05, price, price*0.95 # Default safe values
+        # else:
+        #    st.warning("⚠️ Data Chart belum tersedia. Indodax mungkin sedang sibuk. Coba refresh 1 menit lagi.")
+        #    rsi, macd, sig, hist, stoch_k, stoch_d, bb_upper, bb_mid, bb_lower = 50, 0, 0, 0, 50, 50, price*1.05, price, price*0.95 # Default safe values
 
         # Prediction Section
         st.subheader("🔮 AI Future Prediction")
