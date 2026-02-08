@@ -15,4 +15,4 @@ class Config:
     # TELEGRAM BOT
     # TELEGRAM BOT
     TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
-    TELEGRAM_CHAT_ID = None # Will be auto-discovered
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
