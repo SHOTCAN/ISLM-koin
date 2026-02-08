@@ -3,7 +3,7 @@ import random
 import requests
 import threading
 import time
-from config import Config
+from backend.config import Config
 
 class MarketProjector:
     @staticmethod
