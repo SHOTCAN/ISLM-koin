@@ -1,4 +1,5 @@
-# ISLM Coin Monitor
+# ISLM Monitor - Haqq Network Specialist 🌙🏰
+![Visitor Count](https://profile-counter.glitch.me/SHOTCAN-ISLM-koin/count.svg)
 
 Real-time ISLM/IDR price monitor with candlestick chart.
 
