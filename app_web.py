@@ -4,9 +4,11 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from backend.api import IndodaxAPI
-from backend.core_logic import MarketProjector, FundamentalEngine # Reuse existing logic
+from backend.core_logic import MarketProjector, FundamentalEngine, QuantAnalyzer # Reuse existing logic
 from backend.auth_engine import AuthEngine
+from backend.telegram_bot import TelegramBot
 from backend.config import Config
+import threading
 
 # --- PAGE CONFIG ---
 st.set_page_config(
@@ -15,6 +17,48 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# --- BACKGROUND MONITOR (24/7 BOT) ---
+@st.cache_resource
+class BackgroundMonitor:
+    def __init__(self):
+        self.running = True
+        self.thread = threading.Thread(target=self.run_loop, daemon=True)
+        self.thread.start()
+    
+    def run_loop(self):
+        bot = TelegramBot()
+        api = IndodaxAPI(Config.API_KEY, Config.SECRET_KEY)
+        last_price = 0
+        
+        while self.running:
+            try:
+                # 1. Fetch Real Data
+                ticker = api.get_price('islmidr')
+                price = ticker['last']
+                
+                # 2. Check RSI for Signal
+                candles = api.get_kline('islmidr', '15')
+                if candles:
+                    closes = pd.DataFrame(candles)['close'].values
+                    rsi = QuantAnalyzer.calculate_rsi(closes)
+                    signal = "STRONG BUY 🚀" if rsi < 30 else "SELL ⚠️" if rsi > 70 else "HOLD 🤝"
+                    
+                    # 3. Send Periodic Update (Every 1 Hour or if Big Move)
+                    # For demo/testing: We can make it more frequent or on-demand
+                    # Here we simulate an "Alert" rule:
+                    if abs(price - last_price) / last_price > 0.02: # 2% Move
+                         bot.send_dashboard_menu(price, (price-last_price)/last_price*100, rsi, signal)
+                         last_price = price
+                         
+            except Exception as e:
+                print(f"Bg Loop Error: {e}")
+            
+            time.sleep(60) # Cek setiap 1 menit
+
+# Start Background Thread
+if 'monitor' not in st.session_state:
+    st.session_state.monitor = BackgroundMonitor()
 
 # --- CSS STYLING (Hacker/Crypto Theme) ---
 st.markdown("""
@@ -252,6 +296,16 @@ def main_dashboard():
             st.write(f"- **Signal Line:** {sig:.2f}")
             
             st.info("💡 **AI INSIGHT:** " + ("Pasar sedang Jenuh Beli (Hati-hati Koreksi)" if rsi > 70 else "Pasar Jenuh Jual (Potensi Rebound)" if rsi < 30 else "Pasar Sideways/Stabil."))
+            
+            if st.button("🚨 KIRIM SINYAL KE TELEGRAM"):
+                bot = TelegramBot()
+                signal = "STRONG BUY 🚀" if rsi < 30 else "SELL ⚠️" if rsi > 70 else "HOLD 🤝"
+                change = (price - closes[-2])/closes[-2]*100 if len(closes) > 1 else 0
+                success = bot.send_dashboard_menu(price, change, rsi, signal)
+                if success:
+                    st.success("Sinyal + Menu Terkirim ke Telegram!")
+                else:
+                    st.error("Gagal kirim. Cek Chat ID.")
         else:
             st.error("Data Candle belum tersedia untuk analisis mendalam.")
 
