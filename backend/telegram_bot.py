@@ -60,6 +60,10 @@ class TelegramBot:
                 "text": msg, 
                 "parse_mode": "Markdown",
                 "reply_markup": json.dumps(keyboard)
+            }
+            requests.post(url, json=payload, timeout=5)
+            return True
+        except Exception as e:
             print(f"TeleBot Error: {e}")
             return False
 
