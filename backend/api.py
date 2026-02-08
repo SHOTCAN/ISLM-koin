@@ -77,9 +77,12 @@ class IndodaxAPI:
                 'from': start,
                 'to': end
             }
-            # Add User-Agent to avoid WAF
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-            r = requests.get(url, params=params, headers=headers, timeout=10)
+            # Add User-Agent & Referer to mimic browser fully
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Referer': 'https://indodax.com/market/ISLMIDR'
+            }
+            r = requests.get(url, params=params, headers=headers, timeout=15)
             data = r.json()
             
             if data['s'] == 'ok':

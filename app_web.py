@@ -127,18 +127,46 @@ def main_dashboard():
 
         # Charting (Plotly)
         st.subheader("📈 Realtime Chart")
-        candles = api.get_kline('islmidr', timeframe.replace('m','').replace('h','')) # Simple adjustment
+        
+        # Determine timeframe resolution
+        res_map = {'15m': '15', '1h': '60', '4h': '240', '1d': '1D'}
+        res = res_map.get(timeframe, '15')
+        
+        candles = api.get_kline('islmidr', res)
+        
         if candles:
             df = pd.DataFrame(candles)
             df['time'] = pd.to_datetime(df['time'], unit='s')
             
+            # Basic Line Chart if Candle data is weak, else Candlestick
             fig = go.Figure(data=[go.Candlestick(x=df['time'],
                             open=df['open'], high=df['high'],
-                            low=df['low'], close=df['close'])])
-            fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0,r=0,t=0,b=0))
+                            low=df['low'], close=df['close'],
+                            increasing_line_color= '#26a69a', decreasing_line_color= '#ef5350')])
+            
+            fig.update_layout(
+                template="plotly_dark", 
+                height=500, 
+                plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
+                margin=dict(l=0,r=0,t=0,b=0),
+                xaxis_rangeslider_visible=False
+            )
             st.plotly_chart(fig, use_container_width=True)
+            
+            # --- CALCULATE INDICATORS FOR AI & ADVANCED TAB ---
+            closes = df['close'].values
+            highs = df['high'].values
+            lows = df['low'].values
+            
+            # RSI & MACD
+            rsi = QuantAnalyzer.calculate_rsi(closes)
+            macd, sig, hist = QuantAnalyzer.calculate_macd(closes)
+            stoch_k, stoch_d = QuantAnalyzer.calculate_stoch_rsi(closes)
+            bb_upper, bb_mid, bb_lower = QuantAnalyzer.calculate_bollinger_bands(closes)
+            
         else:
-            st.warning("⚠️ Data Chart belum tersedia. Coba refresh atau ganti timeframe.")
+            st.warning("⚠️ Data Chart belum tersedia. Indodax mungkin sedang sibuk. Coba refresh 1 menit lagi.")
+            rsi, macd, sig, hist, stoch_k, stoch_d, bb_upper, bb_mid, bb_lower = 50, 0, 0, 0, 50, 50, price*1.05, price, price*0.95 # Default safe values
 
         # Prediction Section
         st.subheader("🔮 AI Future Prediction")
@@ -146,7 +174,6 @@ def main_dashboard():
         if sc1.button("RAMAL 1 HARI"):
             with st.spinner("Simulating..."):
                 mp = MarketProjector()
-                # Reuse Monte Carlo Logic
                 prices = [c['close'] for c in candles[-100:]] if candles else [price]*100
                 vol = MarketProjector.calculate_volatility(np.array(prices))
                 drift = MarketProjector.calculate_drift(np.array(prices))
@@ -159,6 +186,7 @@ def main_dashboard():
                 prices = [c['close'] for c in candles[-100:]] if candles else [price]*100
                 vol = MarketProjector.calculate_volatility(np.array(prices))
                 drift = MarketProjector.calculate_drift(np.array(prices))
+                # Boost drift for Ramadan
                 paths = MarketProjector.run_monte_carlo(price, vol, drift*1.2, 20160, 500)
                 target = np.percentile(paths[:,-1], 50)
                 st.success(f"Target Ramadhan: Rp {target:,.0f}")
@@ -167,7 +195,9 @@ def main_dashboard():
         st.info(f"📰 **NEWS FLASH:** {f_news}")
 
     with tab2:
-        st.subheader("🤖 AI Consultant (Beta)")
+        st.subheader("🤖 AI Consultant (Persistent)")
+        # Load chat history from session state (Memory only for now to keep it fast)
+        # Future: Save to JSON if needed, but SessionState is enough for "Active Session"
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
@@ -177,33 +207,53 @@ def main_dashboard():
                 st.markdown(message["content"])
 
         # Chat Input
-        if prompt := st.chat_input("Tanya AI tentang ISLM (Contoh: 'Harga sekarang?', 'Prediksi?', 'Saran?')"):
+        if prompt := st.chat_input("Tanya AI tentang ISLM..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"): st.markdown(prompt)
 
-            # AI Logic (Simple Rule-Based for now)
+            # AI Logic 
             response = ""
             p_lower = prompt.lower()
             
             if "harga" in p_lower:
-                response = f"Harga ISLM saat ini adalah **Rp {price:,.0f}**. High hari ini: Rp {high:,.0f}, Low: Rp {low:,.0f}."
-            elif "prediksi" in p_lower or "ramal" in p_lower:
-                response = f"Berdasarkan analisis Monte Carlo, ada potensi pergerakan ke arah **{(price-low)/(high-low)*100-50:.1f}%** dari range harian. Sentimen pasar saat ini: **{'Positif' if f_score > 0 else 'Negatif'}** ({f_score}/10)."
-            elif "news" in p_lower or "berita" in p_lower:
-                response = f"Berita terbaru: {f_news}"
-            elif "saran" in p_lower or "beli" in p_lower or "jual" in p_lower:
-                action = "BUY" if f_score > 3 else "WAIT/SELL"
-                response = f"Saran AI saat ini: **{action}**. Fundamental Score: {f_score}/10. Selalu gunakan uang dingin ya Bos!"
+                response = f"Harga ISLM saat ini **Rp {price:,.0f}**. RSI: {rsi:.1f} ({'Overbought' if rsi>70 else 'Oversold' if rsi<30 else 'Netral'})."
+            elif "prediksi" in p_lower:
+                # Ensure 'vol' is defined, if candles were not available, it won't be from the prediction section.
+                # For this case, we'll re-calculate or use a default if needed.
+                # Assuming 'vol' is calculated in tab1's prediction section, it should be available.
+                # If candles were not available, 'vol' would not be calculated. Let's ensure it's handled.
+                if 'vol' not in locals(): # Check if vol was calculated in the prediction section
+                    prices_for_vol = [c['close'] for c in candles[-100:]] if candles else [price]*100
+                    vol = MarketProjector.calculate_volatility(np.array(prices_for_vol))
+                response = f"Simulasi AI memproyeksikan volatilitas mingguan sebesar {vol*100:.2f}%. Tren jangka pendek: {'Bullish' if price > bb_mid else 'Bearish'}."
+            elif "news" in p_lower:
+                response = f"Berita: {f_news}"
+            elif "analisa" in p_lower:
+                 response = f"**Analisa Teknikal:**\n- RSI: {rsi:.1f}\n- MACD: {macd:.2f}\n- Stoch: {stoch_k:.1f}\n- Posisi: {'Diatas' if price > bb_mid else 'Dibawah'} Bollinger Tengah."
             else:
-                response = "Maaf, saya hanya bot AI spesialis ISLM. Tanya saya soal harga, prediksi, atau berita terkini! 🤖"
+                response = "Saya Siap! Tanya saya soal 'Harga', 'Prediksi', 'News', atau 'Analisa'."
 
             with st.chat_message("assistant"): st.markdown(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
 
     with tab3:
-        st.subheader("📊 Advanced Market Data")
-        st.write("Coming Soon: Order Book Depth, Whale Alert System, and Multi-Timeframe Analysis.")
-        st.json(ticker)
+        st.subheader("📊 Advanced Market Analysis")
+        if candles:
+            # Gauge Charts or Metrics
+            m1, m2, m3 = st.columns(3)
+            m1.metric("RSI (14)", f"{rsi:.1f}", "Bullish" if rsi > 50 else "Bearish")
+            m2.metric("MACD Level", f"{macd:.2f}", f"{hist:.2f}")
+            m3.metric("Stochastic", f"{stoch_k:.1f}", "Overbought" if stoch_k > 80 else "Oversold" if stoch_k < 20 else "Neutral")
+            
+            st.markdown("---")
+            st.write("### 📐 Technical Indicators")
+            st.write(f"- **Bollinger Upper:** Rp {bb_upper:,.0f}")
+            st.write(f"- **Bollinger Lower:** Rp {bb_lower:,.0f}")
+            st.write(f"- **Signal Line:** {sig:.2f}")
+            
+            st.info("💡 **AI INSIGHT:** " + ("Pasar sedang Jenuh Beli (Hati-hati Koreksi)" if rsi > 70 else "Pasar Jenuh Jual (Potensi Rebound)" if rsi < 30 else "Pasar Sideways/Stabil."))
+        else:
+            st.error("Data Candle belum tersedia untuk analisis mendalam.")
 
 
 # --- APP ROUTER ---
