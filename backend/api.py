@@ -17,7 +17,11 @@ class IndodaxAPI:
         params['nonce'] = self.nonce
         try:
             r = requests.post('https://indodax.com/tapi', 
-                headers={'Key': self.api_key, 'Sign': self._sign(params)}, 
+                headers={
+                    'Key': self.api_key, 
+                    'Sign': self._sign(params),
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }, 
                 data=params, timeout=10)
             return r.json()
         except Exception as e:
@@ -73,7 +77,9 @@ class IndodaxAPI:
                 'from': start,
                 'to': end
             }
-            r = requests.get(url, params=params, timeout=10)
+            # Add User-Agent to avoid WAF
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+            r = requests.get(url, params=params, headers=headers, timeout=10)
             data = r.json()
             
             if data['s'] == 'ok':
