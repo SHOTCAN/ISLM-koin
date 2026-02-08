@@ -30,9 +30,13 @@ class BackgroundMonitor:
         bot = TelegramBot()
         api = IndodaxAPI(Config.API_KEY, Config.SECRET_KEY)
         last_price = 0
+        offset = None 
         
         while self.running:
             try:
+                # 0. Handle Telegram Updates (Buttons/Commands)
+                offset = bot.handle_updates(offset)
+                
                 # 1. Fetch Real Data
                 ticker = api.get_price('islmidr')
                 price = ticker['last']

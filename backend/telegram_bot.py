@@ -60,9 +60,53 @@ class TelegramBot:
                 "text": msg, 
                 "parse_mode": "Markdown",
                 "reply_markup": json.dumps(keyboard)
-            }
-            requests.post(url, json=payload, timeout=5)
-            return True
-        except Exception as e:
             print(f"TeleBot Error: {e}")
             return False
+
+    def get_updates(self, offset=None):
+        try:
+            url = f"{self.base_url}/getUpdates"
+            params = {'timeout': 100, 'offset': offset}
+            r = requests.get(url, params=params, timeout=10)
+            return r.json()
+        except:
+            return {}
+
+    def handle_updates(self, offset=None):
+        """
+        Simple polling to handle button clicks.
+        """
+        updates = self.get_updates(offset)
+        if not updates.get('ok'): return offset
+        
+        for u in updates.get('result', []):
+            offset = u['update_id'] + 1
+            
+            # 1. Handle Button Click (CallbackQuery)
+            if 'callback_query' in u:
+                cb = u['callback_query']
+                cb_id = cb['id']
+                data = cb['data']
+                chat_id = cb['message']['chat']['id']
+                
+                # Acknowledge (Stop loading animation)
+                requests.post(f"{self.base_url}/answerCallbackQuery", json={'callback_query_id': cb_id})
+                
+                # Logic
+                if data == "status":
+                    self.send_message("📊 *LIVE STATUS ISLM*\nLoad data terakhir dari web...")
+                elif data == "predict":
+                    self.send_message("🔮 *AI PREDIKSI*\nAnalisa Monte Carlo sedang berjalan di server...")
+                elif data == "news":
+                    self.send_message("📰 *BERITA*\nCek Dashboard untuk berita lengkap.")
+                elif data == "alert":
+                    self.send_message("🚨 *ALERT SET*\nNotifikasi harga aktif untuk pergerakan >2%.")
+            
+            # 2. Handle Commands (/start, /menu)
+            elif 'message' in u:
+                msg = u['message']
+                text = msg.get('text', '')
+                if text == '/start' or text == '/menu':
+                    self.send_dashboard_menu(0, 0, 50, "WAITING DATA...")
+                    
+        return offset

@@ -80,12 +80,21 @@ class IndodaxAPI:
             # Add User-Agent & Referer to mimic browser fully
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                'Referer': 'https://indodax.com/market/ISLMIDR'
+                'Referer': 'https://indodax.com/market/ISLMIDR',
+                'Accept': 'application/json'
             }
             r = requests.get(url, params=params, headers=headers, timeout=15)
+            
+            # Debugging Output (Visible in Streamlit Logs)
+            print(f"DEBUG CHART: Status {r.status_code} | URL: {r.url}")
+            
+            if r.status_code != 200:
+                print(f"DEBUG CHART ERROR: {r.text[:100]}")
+                return []
+
             data = r.json()
             
-            if data['s'] == 'ok':
+            if data.get('s') == 'ok':
                 candles = []
                 for i in range(len(data['t'])):
                     candles.append({
@@ -97,5 +106,7 @@ class IndodaxAPI:
                         'vol': data['v'][i]
                     })
                 return candles
-        except: pass
+        except Exception as e:
+            print(f"DEBUG CHART EXCEPTION: {e}")
+            pass
         return []
