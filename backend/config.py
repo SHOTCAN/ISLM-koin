@@ -13,5 +13,6 @@ class Config:
     PORT = int(os.getenv('PORT', 5500))
     
     # TELEGRAM BOT
-    TELEGRAM_TOKEN = "8519352553:AAE4pdqy7m8OC6BAXsaay2GSZ2SbVyPOBWM"
+    # TELEGRAM BOT
+    TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '')
     TELEGRAM_CHAT_ID = None # Will be auto-discovered
