@@ -65,7 +65,7 @@ def login_page():
 # --- MAIN DASHBOARD ---
 def main_dashboard():
     # API Reuse
-    api = IndodaxAPI(Config.INDODAX_API_KEY, Config.INDODAX_SECRET_KEY)
+    api = IndodaxAPI(Config.API_KEY, Config.SECRET_KEY)
     
     # Sidebar
     with st.sidebar:
