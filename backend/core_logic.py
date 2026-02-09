@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from backend.config import Config
 
-# --- Seed untuk reproduksi (opsional, bisa di-comment untuk true random)
+# --- Seed untuk reproduksi (opsional)
 # np.random.seed(42)
 
 class MarketProjector:
@@ -17,7 +17,7 @@ class MarketProjector:
         if len(prices) < 2:
             return 0.001
         pct_changes = np.diff(prices) / (prices[:-1] + 1e-10)
-        return np.std(pct_changes)  # Std dev return = volatility
+        return np.std(pct_changes)
 
     @staticmethod
     def calculate_long_term_trend(prices):
@@ -49,11 +49,11 @@ class MarketProjector:
 
     @staticmethod
     def run_monte_carlo(current_price, volatility, drift, horizon_minutes, simulations=1000, steps=None):
-        """Monte Carlo GBM. Returns (paths, percentiles_dict). steps=None => auto from horizon."""
+        """Monte Carlo GBM. Returns (paths, percentiles_dict)."""
         vol = max(volatility, 0.0005)
         if steps is None:
             steps = min(200, max(50, int(horizon_minutes / 30)))
-        dt = horizon_minutes / (steps * 1440.0) if horizon_minutes > 0 else 1/1440.0  # in days
+        dt = horizon_minutes / (steps * 1440.0) if horizon_minutes > 0 else 1/1440.0
         step_drift = drift * dt
         step_vol = vol * np.sqrt(dt)
         shocks = np.random.normal(0, 1, (simulations, steps))
@@ -71,6 +71,47 @@ class MarketProjector:
             "mean": float(np.mean(final_prices)),
         }
         return price_paths, percentiles
+
+    @staticmethod
+    def predict_multi_horizon(current_price, prices):
+        """Prediksi multi-horizon: 1 hari, 3 hari, 7 hari. Returns dict of results."""
+        results = {}
+        vol = MarketProjector.calculate_volatility(np.array(prices))
+        drift = MarketProjector.calculate_drift(np.array(prices))
+        trend = MarketProjector.calculate_long_term_trend(np.array(prices))
+
+        # Adjust drift with long-term trend
+        adjusted_drift = drift + (trend / (current_price + 1e-10)) * 0.1
+
+        horizons = {
+            "1_hari": {"minutes": 1440, "sims": 1000, "label": "1 Hari"},
+            "3_hari": {"minutes": 4320, "sims": 1000, "label": "3 Hari"},
+            "7_hari": {"minutes": 10080, "sims": 800, "label": "7 Hari"},
+        }
+
+        for key, h in horizons.items():
+            _, pct = MarketProjector.run_monte_carlo(
+                current_price, vol, adjusted_drift, h["minutes"], h["sims"]
+            )
+            change_pct = (pct["p50"] - current_price) / (current_price + 1e-10) * 100
+            if change_pct > 2:
+                direction = "NAIK 📈"
+            elif change_pct < -2:
+                direction = "TURUN 📉"
+            else:
+                direction = "SIDEWAYS ➡️"
+
+            results[key] = {
+                "label": h["label"],
+                "target": pct["p50"],
+                "low": pct["p5"],
+                "high": pct["p95"],
+                "change_pct": change_pct,
+                "direction": direction,
+                "confidence": min(95, max(40, 80 - abs(change_pct) * 2)),
+            }
+        return results
+
 
 class CandleSniper:
     """Deteksi pola candlestick untuk sinyal reversal/continuation."""
@@ -131,6 +172,7 @@ class CandleSniper:
             pass
         return patterns
 
+
 class NewsEngine:
     @staticmethod
     def generate_news(phase, price_change_pct, whale_ratio):
@@ -143,17 +185,17 @@ class NewsEngine:
         elif whale_ratio < 0.4:
             news_templates.extend([
                 "⚠️ ALERT: Tekanan jual dari dompet paus terdeteksi. Waspada koreksi.",
-                "📉 INFO PASAR: Beberapa validator besar terpantau melakukan aksi ambil untung (Profit Taking)."
+                "📉 INFO PASAR: Beberapa validator besar terpantau melakukan aksi ambil untung."
             ])
         if phase == "MARKUP (NAIK) 🚀":
             news_templates.extend([
-                "🚀 ADOPTION NEWS: Volume transaksi di ekosistem Islamic Coin meningkat 15% sejam terakhir.",
+                "🚀 ADOPTION NEWS: Volume transaksi di ekosistem Islamic Coin meningkat 15%.",
                 "🌍 GLOBAL: Sentimen pasar aset syariah sedang positif di Timur Tengah."
             ])
         elif phase == "MARKDOWN (TURUN) 🔻":
             news_templates.extend([
                 "🐻 SENTIMEN: Ketidakpastian global menekan harga aset kripto termasuk ISLM.",
-                "🛑 SUPPORT TEST: Harga sedang menguji level kritikal. Hati-hati jebol."
+                "🛑 SUPPORT TEST: Harga sedang menguji level kritikal."
             ])
         news_templates.extend([
             "ℹ️ TIPS: Diversifikasi aset tetap kunci aman trading.",
@@ -163,12 +205,13 @@ class NewsEngine:
         try: return random.choice(news_templates)
         except: return "ℹ️ Info Pasar: Stay Safe."
 
+
 class TelegramNotifier:
     def __init__(self, token, chat_id=None):
         self.token = token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{token}"
-    
+
     def send_message(self, message):
         if not self.chat_id: return False
         try:
@@ -189,16 +232,12 @@ class TelegramNotifier:
         except: pass
         return []
 
+
 class WhaleTracker:
     """Rasio order besar (whale) dari order book untuk deteksi pump/dump."""
 
     @staticmethod
     def get_whale_ratio(buy_orders, sell_orders, threshold_pct=0.1):
-        """
-        buy_orders, sell_orders: list of [price, amount].
-        threshold_pct: consider top 10% by size as 'whale'.
-        Returns whale_buy_ratio in [0,1]: >0.6 = whale buying, <0.4 = whale selling.
-        """
         if not buy_orders or not sell_orders:
             return 0.5
         buy_vol = sum(float(a) for _, a in buy_orders)
@@ -206,7 +245,6 @@ class WhaleTracker:
         total = buy_vol + sell_vol
         if total == 0:
             return 0.5
-        # Whale = top portion by size (simplified: sum of top 20% orders by value)
         def top_volume(orders, pct=0.2):
             by_val = sorted([(float(p) * float(a), a) for p, a in orders], key=lambda x: -x[0])
             n = max(1, int(len(by_val) * pct))
@@ -234,8 +272,6 @@ class FundamentalEngine:
     def _is_ramadan_zone():
         try:
             now = datetime.utcnow()
-            # Approximate Ramadan 2025: ~Feb 28 - Mar 30 (converter bisa dipakai untuk akurat)
-            # Simplifikasi: bulan 3 = Maret sering Ramadan
             if now.month == 3 or (now.month == 2 and now.day >= 25):
                 return True
             return False
@@ -262,12 +298,12 @@ class FundamentalEngine:
         news_text = " & ".join(e[0] for e in daily_events)
         return score, news_text
 
+
 class QuantAnalyzer:
-    """Indikator teknikal: RSI (Wilder), MACD (benar), Bollinger, ATR, Fibonacci, fase pasar."""
+    """Indikator teknikal: RSI (Wilder), MACD, Bollinger, ATR, Fibonacci, fase pasar."""
 
     @staticmethod
     def calculate_ema_series(prices, window):
-        """Return array EMA untuk tiap titik (untuk MACD signal)."""
         if len(prices) < window:
             return None
         out = np.zeros(len(prices))
@@ -279,7 +315,6 @@ class QuantAnalyzer:
 
     @staticmethod
     def calculate_rsi(prices, period=14):
-        """RSI dengan smoothing ala Wilder (EMA gains/losses)."""
         if len(prices) < period + 1:
             return 50.0
         deltas = np.diff(prices)
@@ -294,7 +329,6 @@ class QuantAnalyzer:
 
     @staticmethod
     def calculate_rsi_series(prices, period=14):
-        """Return array RSI untuk divergence check."""
         if len(prices) < period + 1:
             return None
         out = np.full(len(prices), 50.0)
@@ -323,13 +357,11 @@ class QuantAnalyzer:
 
     @staticmethod
     def calculate_macd(prices, fast=12, slow=26, signal_period=9):
-        """MACD line, Signal = EMA(signal_period) dari MACD line, Histogram."""
         if len(prices) < slow:
             return 0.0, 0.0, 0.0
         ema_f = QuantAnalyzer.calculate_ema_series(prices, fast)
         ema_s = QuantAnalyzer.calculate_ema_series(prices, slow)
         macd_line = ema_f - ema_s
-        # Signal = EMA of MACD
         macd_series = macd_line[slow - 1 :]
         if len(macd_series) < signal_period:
             return float(macd_line[-1]), float(macd_line[-1]), 0.0
@@ -409,7 +441,7 @@ class QuantAnalyzer:
 
 
 class AISignalEngine:
-    """Gabungan RSI, MACD, BB, Candle, Whale, Fundamental -> satu skor & label sinyal AI."""
+    """Gabungan RSI, MACD, BB, Candle, Whale, Fundamental -> skor & label sinyal AI + REASONING."""
 
     @staticmethod
     def compute(
@@ -424,34 +456,77 @@ class AISignalEngine:
         whale_ratio,
         fundamental_score,
     ):
-        score = 0.0  # -1 s/d 1
+        score = 0.0
+        reasons = []
+
+        # --- RSI Analysis (weight: 25%) ---
         if rsi < 30:
             score += 0.25
+            reasons.append(f"📊 RSI={rsi:.0f} → Oversold (Jenuh Jual)")
         elif rsi > 70:
             score -= 0.25
+            reasons.append(f"📊 RSI={rsi:.0f} → Overbought (Jenuh Beli)")
         elif rsi < 45:
             score += 0.08
+            reasons.append(f"📊 RSI={rsi:.0f} → Cenderung Bullish")
         elif rsi > 55:
             score -= 0.08
+            reasons.append(f"📊 RSI={rsi:.0f} → Cenderung Bearish")
+        else:
+            reasons.append(f"📊 RSI={rsi:.0f} → Netral")
+
+        # --- MACD Analysis (weight: 15%) ---
         if macd_hist > 0:
             score += 0.15
+            reasons.append(f"📈 MACD Histogram Positif (+{macd_hist:.2f}) → Momentum Naik")
         else:
             score -= 0.15
-        if bb_mid is not None:
-            if price < (bb_lower or 0):
+            reasons.append(f"📉 MACD Histogram Negatif ({macd_hist:.2f}) → Momentum Turun")
+
+        # --- Bollinger Bands Analysis (weight: 15%) ---
+        if bb_mid is not None and bb_lower is not None and bb_upper is not None:
+            if price < bb_lower:
                 score += 0.15
-            elif price > (bb_upper or 0):
+                reasons.append(f"🔽 Harga di BAWAH Bollinger Lower → Potensi Rebound")
+            elif price > bb_upper:
                 score -= 0.15
-        score += (candle_bull_count - candle_bear_count) * 0.1
+                reasons.append(f"🔼 Harga di ATAS Bollinger Upper → Potensi Koreksi")
+            else:
+                bb_pos = (price - bb_lower) / (bb_upper - bb_lower + 1e-10) * 100
+                reasons.append(f"📐 Posisi BB: {bb_pos:.0f}% (0=Lower, 100=Upper)")
+
+        # --- Candle Pattern Analysis (weight: 10%) ---
+        net_candle = candle_bull_count - candle_bear_count
+        score += net_candle * 0.1
+        if candle_bull_count > 0:
+            reasons.append(f"🕯️ {candle_bull_count} Pola Bullish terdeteksi")
+        if candle_bear_count > 0:
+            reasons.append(f"🕯️ {candle_bear_count} Pola Bearish terdeteksi")
+
+        # --- Whale Analysis (weight: 12%) ---
         if whale_ratio >= 0.6:
             score += 0.12
+            reasons.append(f"🐋 Whale BELI dominan ({whale_ratio*100:.0f}%) → Akumulasi")
         elif whale_ratio <= 0.4:
             score -= 0.12
+            reasons.append(f"🐋 Whale JUAL dominan ({whale_ratio*100:.0f}%) → Distribusi")
+        else:
+            reasons.append(f"🐋 Whale seimbang ({whale_ratio*100:.0f}%)")
+
+        # --- Fundamental Analysis (weight: 10%) ---
         if fundamental_score >= 6:
             score += 0.1
+            reasons.append(f"🌙 Fundamental KUAT (Skor: {fundamental_score}/10)")
         elif fundamental_score <= 2:
             score -= 0.1
+            reasons.append(f"⚠️ Fundamental LEMAH (Skor: {fundamental_score}/10)")
+        else:
+            reasons.append(f"📋 Fundamental Netral (Skor: {fundamental_score}/10)")
+
+        # --- Clamp and Label ---
         score = max(-1.0, min(1.0, score))
+        confidence = abs(score)
+
         if score >= 0.4:
             label = "STRONG BUY 🚀"
         elif score >= 0.15:
@@ -462,4 +537,50 @@ class AISignalEngine:
             label = "SELL 📉"
         else:
             label = "HOLD 🤝"
-        return {"score": score, "label": label, "confidence": abs(score)}
+
+        # --- Trend Detection (SMA20 vs current) ---
+        trend = "Sideways"
+        if bb_mid is not None:
+            if price > bb_mid * 1.01:
+                trend = "Bullish 🐂"
+            elif price < bb_mid * 0.99:
+                trend = "Bearish 🐻"
+            else:
+                trend = "Sideways ➡️"
+
+        return {
+            "score": score,
+            "label": label,
+            "confidence": confidence,
+            "trend": trend,
+            "reasons": reasons,
+        }
+
+    @staticmethod
+    def generate_ai_summary(signal_result, price, predictions=None):
+        """Generate a human-readable AI analysis summary."""
+        lines = []
+        lines.append(f"🤖 **ANALISA AI ISLM MONITOR**")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"💰 **Harga Sekarang:** Rp {price:,.0f}")
+        lines.append(f"📢 **Sinyal:** {signal_result['label']}")
+        lines.append(f"🎯 **Confidence:** {signal_result['confidence']*100:.0f}%")
+        lines.append(f"📈 **Trend:** {signal_result['trend']}")
+        lines.append(f"")
+        lines.append(f"**📋 REASONING:**")
+        for r in signal_result.get("reasons", []):
+            lines.append(f"  • {r}")
+
+        if predictions:
+            lines.append(f"")
+            lines.append(f"**🔮 PREDIKSI:**")
+            for key, pred in predictions.items():
+                lines.append(
+                    f"  • {pred['label']}: Rp {pred['target']:,.0f} "
+                    f"({pred['change_pct']:+.1f}%) {pred['direction']} "
+                    f"[{pred['confidence']:.0f}% conf]"
+                )
+
+        lines.append(f"")
+        lines.append(f"⏰ Update: {datetime.now().strftime('%H:%M:%S WIB')}")
+        return "\n".join(lines)

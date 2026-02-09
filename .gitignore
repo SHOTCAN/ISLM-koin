@@ -1,4 +1,25 @@
+# ISLM Monitor - Environment & Secrets
 .env
+.streamlit/secrets.toml
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
 venv/
+.venv/
+
+# Session & Runtime Data
+*.json
+!requirements.json
+lockdown.flag
+*.flag
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
+
+# IDE
+.vscode/
+.idea/
