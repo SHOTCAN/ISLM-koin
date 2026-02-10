@@ -20,6 +20,8 @@ import sys
 import os
 import time
 import traceback
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +30,27 @@ import pandas as pd
 import numpy as np
 from backend.api import IndodaxAPI
 from backend.config import Config
+
+
+# ============================================
+# HEALTH CHECK SERVER (for Koyeb/Cloud)
+# ============================================
+class HealthHandler(BaseHTTPRequestHandler):
+    """Tiny HTTP server for cloud health checks."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'ISLM Bot OK')
+    def log_message(self, format, *args):
+        pass  # Suppress logs
+
+def start_health_server():
+    port = int(os.environ.get('PORT', 8000))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"[HEALTH] HTTP server on port {port}")
 from backend.core_logic import (
     MarketProjector,
     FundamentalEngine,
@@ -411,6 +434,9 @@ class StandaloneBot:
         print(f"⏱️ Auto-update: Every {UPDATE_INTERVAL}s")
         print(f"📥 Poll interval: Every {POLL_INTERVAL}s")
         print("=" * 50)
+
+        # Start health check server for cloud platforms
+        start_health_server()
 
         if not self.token or not self.chat_id:
             print("[FATAL] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID in .env!")
