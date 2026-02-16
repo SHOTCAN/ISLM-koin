@@ -84,11 +84,23 @@ PAIR = 'islmidr'
 # ============================================
 class StandaloneBot:
     def __init__(self):
-        self.token = Config.TELEGRAM_TOKEN
-        self.chat_id = Config.TELEGRAM_CHAT_ID
+        # Try Config first, then direct os.getenv (Railway injects env vars)
+        self.token = Config.TELEGRAM_TOKEN or os.environ.get('TELEGRAM_TOKEN', '')
+        self.chat_id = Config.TELEGRAM_CHAT_ID or os.environ.get('TELEGRAM_CHAT_ID', '')
+
+        # Debug: show which source worked
+        if self.token:
+            safe_print(f"[CONFIG] Token loaded ({'Config' if Config.TELEGRAM_TOKEN else 'os.environ'})")
+        else:
+            safe_print("[CONFIG] WARNING: No token found in Config or os.environ!")
+            safe_print(f"[CONFIG] Available env keys: {[k for k in os.environ if 'TELEGRAM' in k.upper()]}")
+
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.offset = None
-        self.api = IndodaxAPI(Config.API_KEY, Config.SECRET_KEY)
+        self.api = IndodaxAPI(
+            Config.API_KEY or os.environ.get('INDODAX_API_KEY', ''),
+            Config.SECRET_KEY or os.environ.get('INDODAX_SECRET_KEY', '')
+        )
         self.security = SecurityEngine(self.token, self.chat_id)
 
         # Interval timers
