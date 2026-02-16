@@ -183,17 +183,17 @@ def login_page():
 
 
 # ============================================
-# DEEPSEEK AI CHATBOT
+# GROQ AI CHATBOT (100% FREE — Llama 3.3 70B)
 # ============================================
-def _deepseek_chat(prompt, market_context):
-    """Send prompt to DeepSeek API with market context."""
-    api_key = Config._get_config('DEEPSEEK_API_KEY', '')
+def _ai_chat(prompt, market_context):
+    """Send prompt to Groq API (free) with market context."""
+    api_key = Config._get_config('GROQ_API_KEY', '')
     if not api_key:
         return None  # Fallback to rule-based
 
     try:
-        import openai
-        client = openai.OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        from groq import Groq
+        client = Groq(api_key=api_key)
         system_prompt = (
             "Kamu adalah AI analis trading profesional yang fokus pada ISLM (Islamic Coin) / Haqq Network. "
             "Jawab dalam Bahasa Indonesia yang ringkas dan jelas. "
@@ -205,7 +205,7 @@ def _deepseek_chat(prompt, market_context):
             "Format jawaban dengan emoji dan markdown yang rapi."
         )
         response = client.chat.completions.create(
-            model="deepseek-chat",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
@@ -215,7 +215,7 @@ def _deepseek_chat(prompt, market_context):
         )
         return response.choices[0].message.content
     except Exception as e:
-        print(f"[DeepSeek Error] {e}")
+        print(f"[Groq Error] {e}")
         return None
 
 
@@ -350,7 +350,7 @@ def main_dashboard():
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;">
             <div>
                 <h1>🕌 ISLM Monitor V4</h1>
-                <p>AI-Powered • ProTA 40+ Indicators • ML GradientBoosting • DeepSeek AI</p>
+                <p>AI-Powered • ProTA 40+ Indicators • ML GradientBoosting • Groq Llama AI (Free)</p>
             </div>
             <div style="text-align:right;">
                 <div style="color:#e6edf3;font-size:1.8rem;font-weight:700;">Rp {price:,.0f}</div>
@@ -361,7 +361,7 @@ def main_dashboard():
     """, unsafe_allow_html=True)
 
     # --- TABS ---
-    tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "💬 AI Chat (DeepSeek)", "📈 Analisa"])
+    tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "💬 AI Chat (Groq Free)", "📈 Analisa"])
 
     # ============================================
     # TAB 1: DASHBOARD
@@ -473,7 +473,7 @@ def main_dashboard():
     # ============================================
     with tab2:
         st.markdown("#### 💬 Tanya AI tentang ISLM")
-        st.caption("Powered by DeepSeek AI — jawab kontekstual dengan data real-time")
+        st.caption("Powered by Groq AI (Llama 3.3 70B) — 100% GRATIS, jawab kontekstual dengan data real-time")
 
         # Quick buttons
         qr1, qr2, qr3, qr4 = st.columns(4)
@@ -507,7 +507,7 @@ def main_dashboard():
             # Try DeepSeek first, fallback to rule-based
             with st.chat_message("assistant"):
                 with st.spinner("🤖 AI sedang menganalisa..."):
-                    response = _deepseek_chat(prompt, context)
+                    response = _ai_chat(prompt, context)
                     if response is None:
                         response = _fallback_response(
                             prompt, price, rsi, macd_val, hist, stoch_k,

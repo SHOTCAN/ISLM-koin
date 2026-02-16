@@ -41,8 +41,8 @@ class Config:
     TELEGRAM_TOKEN = _get('TELEGRAM_TOKEN')
     TELEGRAM_CHAT_ID = _get('TELEGRAM_CHAT_ID')
 
-    # DeepSeek AI
-    DEEPSEEK_API_KEY = _get('DEEPSEEK_API_KEY')
+    # Groq AI (Free — Llama 3.3 70B)
+    GROQ_API_KEY = _get('GROQ_API_KEY')
 
     @staticmethod
     def _get_config(key, default=''):
