@@ -84,29 +84,15 @@ PAIR = 'islmidr'
 # ============================================
 class StandaloneBot:
     def __init__(self):
-        # === DEBUG: Dump ALL env vars to find Railway injection issue ===
-        safe_print("[DEBUG] === ENV VARS DEBUG ===")
-        all_keys = sorted(os.environ.keys())
-        safe_print(f"[DEBUG] Total env vars: {len(all_keys)}")
-        # Show all non-system env vars (filter common system ones)
-        custom_keys = [k for k in all_keys if not k.startswith(('_', 'HOME', 'PATH', 'PWD', 'LANG',
-                       'TERM', 'SHLVL', 'HOSTNAME', 'PYTHON', 'PIP', 'GPG'))]
-        safe_print(f"[DEBUG] Custom env vars: {custom_keys}")
-        # Specifically check our keys
-        for key in ['TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID', 'INDODAX_API_KEY', 'GROQ_API_KEY']:
-            val = os.environ.get(key, '<NOT SET>')
-            safe_print(f"[DEBUG] {key} = {'***' + val[-4:] if val != '<NOT SET>' and len(val) > 4 else val}")
-        safe_print("[DEBUG] === END DEBUG ===")
-
-        # Try Config first, then direct os.getenv (Railway injects env vars)
+        # Try Config first, then direct os.environ (Railway injects env vars)
         self.token = Config.TELEGRAM_TOKEN or os.environ.get('TELEGRAM_TOKEN', '')
         self.chat_id = Config.TELEGRAM_CHAT_ID or os.environ.get('TELEGRAM_CHAT_ID', '')
 
-        # Debug: show which source worked
         if self.token:
-            safe_print(f"[CONFIG] Token loaded ({'Config' if Config.TELEGRAM_TOKEN else 'os.environ'})")
+            safe_print(f"[CONFIG] Token loaded OK")
         else:
-            safe_print("[CONFIG] WARNING: No token found in Config or os.environ!")
+            safe_print("[CONFIG] WARNING: No TELEGRAM_TOKEN found!")
+            safe_print(f"[CONFIG] Telegram env keys: {[k for k in os.environ if 'TELEGRAM' in k.upper()]}")
 
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.offset = None
@@ -126,6 +112,24 @@ class StandaloneBot:
         self.price_history = []
         self.daily_high = 0
         self.daily_low = float('inf')
+
+        # V6: Smart Alert System
+        self.last_alert_time = 0
+        self.alert_cooldown = 900      # 15 min minimum between alerts
+        self.alert_threshold = 0.03    # 3% price change triggers alert
+        self.alerts_this_hour = 0
+        self.alerts_hour_reset = time.time()
+        self.max_alerts_per_hour = 4
+        self.last_alert_price = 0
+
+        # V6: Volatility Adaptive System
+        self.volatility_mode = False
+        self.volatile_interval = 600   # 10 min during high volatility
+        self.last_volatile_check = 0
+        self.price_samples_5min = []   # Recent samples for volatility calc
+
+        # V6: Conversation memory
+        self._chat_memory = []
 
         # AI cache
         self._cache = {
@@ -775,11 +779,13 @@ class StandaloneBot:
         return self._ask_groq_ai(text)
 
     # ============================================
-    # GROQ AI V5 — Empathetic + Multi-Coin + Smart
+    # GROQ AI V6 — Genius Mode + Memory + Chain-of-Thought
     # ============================================
     def _ask_groq_ai(self, user_message):
-        """Send user message to Groq AI with full market context + empathy."""
+        """Send user message to Groq AI with full market context, memory, and genius-level understanding."""
         api_key = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
+        if not api_key:
+            api_key = os.environ.get('GROQ_API_KEY', '')
         if not api_key:
             return (
                 "🤖 Coba ketik:\n"
@@ -867,45 +873,100 @@ class StandaloneBot:
 
             market_context = "\n".join(context_lines)
 
+            # === V6: GENIUS SYSTEM PROMPT ===
             system_prompt = (
-                "Kamu adalah ISLM AI Assistant — AI sahabat trading yang pintar, hangat, dan pengertian. "
-                "Nama kamu 'ISLM AI'. Kamu fokus pada ISLM (Islamic Coin) / Haqq Network, tapi juga paham coin lain di Indodax.\n\n"
+                "Kamu adalah ISLM AI — asisten trading super pintar yang bisa memahami KONTEKS dan MAKSUD user "
+                "dengan sangat baik, bahkan jika pertanyaan mereka ambigu, singkat, atau menggunakan bahasa gaul.\n\n"
 
-                "KEPRIBADIAN:\n"
-                "- Kamu ramah, supportif, dan empatis. Kalau user curhat atau frustasi soal trading, dengarkan dan beri semangat.\n"
-                "- Kamu BUKAN robot kaku. Jawab seperti teman yang pintar dan care.\n"
-                "- Kalau user sedih karena rugi, beri motivasi dan saran risk management.\n"
-                "- Kalau user senang karena profit, ikut senang tapi ingatkan untuk tetap hati-hati.\n"
-                "- Gunakan Bahasa Indonesia yang santai tapi profesional.\n\n"
+                "=== CARA BERPIKIR (CHAIN-OF-THOUGHT) ===\n"
+                "Sebelum menjawab, SELALU lakukan ini di dalam pikiranmu:\n"
+                "1. PAHAMI MAKSUD: Apa yang sebenarnya user tanyakan? Jangan hanya baca literal.\n"
+                "   - 'gimana?' → user tanya kondisi market ISLM\n"
+                "   - 'jadi beli ga?' → user minta rekomendasi aksi\n"
+                "   - 'kok turun sih' → user frustasi + minta penjelasan\n"
+                "   - 'worth it ga?' → user minta analisa risk/reward\n"
+                "   - 'kapan naik?' → user minta prediksi timing\n"
+                "   - 'lagi galau nih' → user butuh dukungan emosional + saran\n"
+                "   - 'bagus ga ISLM?' → user minta opini + data fundamental\n"
+                "   - 'aman ga hold?' → user minta analisa risk untuk hold position\n"
+                "2. TENTUKAN TIPE: Apakah ini pertanyaan analitis, emosional, komparatif, atau edukasi?\n"
+                "3. PILIH GAYA: Sesuaikan gaya jawaban dengan tipe pertanyaan.\n"
+                "4. JAWAB DENGAN DATA: Selalu backup opini dengan data real-time.\n\n"
 
-                "KEMAMPUAN:\n"
+                "=== KEPRIBADIAN ===\n"
+                "- Kamu sahabat trading yang SANGAT pintar dan pengertian\n"
+                "- Kamu paham bahasa Indonesia gaul, slang, typo, singkatan\n"
+                "  (gw=saya, lu=kamu, gak/ga/kagak=tidak, gimana/gmn=bagaimana, bgt=banget, "
+                "   dah/udh=sudah, bisa/bs=bisa, yg=yang, emg/emang=memang, dll)\n"
+                "- Kalau user curhat/frustasi → DENGARKAN dulu, empati, baru kasih solusi\n"
+                "- Kalau user senang → ikut senang, tapi ingatkan risk management\n"
+                "- Kalau pertanyaan ambigu → tebak maksud terbaik, jawab, lalu tanyakan\n"
+                "- JANGAN pernah jawab 'saya tidak mengerti' — selalu coba interpretasi\n"
+                "- Jawab FOKUS dan RELEVAN, jangan bertele-tele\n\n"
+
+                "=== GAYA JAWABAN PER TIPE ===\n"
+                "📊 ANALITIS (harga, prediksi, teknikal):\n"
+                "  → Langsung kasih data + angka + rekomendasi aksi\n"
+                "  → Format: Kondisi → Analisa → Aksi yang disarankan\n\n"
+                "💭 EMOSIONAL (curhat, galau, takut, senang):\n"
+                "  → Empati dulu → Validasi perasaan → Saran praktis\n"
+                "  → Gunakan bahasa hangat dan supportif\n\n"
+                "⚖️ KOMPARATIF (bandingkan coin, strategi):\n"
+                "  → Tabel perbandingan → Pro/Kontra → Rekomendasi\n\n"
+                "📚 EDUKASI (apa itu RSI, cara trading, dll):\n"
+                "  → Jelaskan sederhana → Contoh nyata dengan data ISLM\n\n"
+
+                "=== KEMAMPUAN ===\n"
                 "- Analisis teknikal mendalam (RSI, MACD, BB, Fibonacci, S/R, dll)\n"
                 "- Prediksi harga berdasarkan data (Monte Carlo, ML)\n"
                 "- Risk metrics (Sharpe, MaxDD, WinRate, VaR)\n"
-                "- Bisa jawab tentang coin lain di Indodax (BTC, ETH, SOL, dll)\n"
-                "- Bisa ngobrol santai tentang topik apapun — tapi kaitkan ke crypto/investasi\n\n"
+                "- Multi-coin analysis (BTC, ETH, SOL, dll di Indodax)\n"
+                "- Edukasi trading dan crypto\n"
+                "- Emotional support dan motivasi\n"
+                "- Menjawab follow-up questions dengan konteks percakapan sebelumnya\n\n"
 
-                f"DATA REAL-TIME:\n{market_context}\n\n"
+                f"=== DATA REAL-TIME ===\n{market_context}\n\n"
 
-                "ATURAN:\n"
-                "- Selalu sertakan angka dan data real-time dalam jawaban\n"
-                "- Gunakan emoji yang sesuai\n"
-                "- Format jawaban rapi dan mudah dibaca\n"
-                "- Kalau ditanya di luar crypto, tetap jawab tapi kaitkan ke konteks investasi\n"
-                "- Jangan pernah bilang 'saya tidak bisa' — selalu coba bantu\n"
-                "- Maksimal 600 kata"
+                "=== ATURAN WAJIB ===\n"
+                "- SELALU sertakan angka/data real-time yang relevan\n"
+                "- Gunakan emoji yang sesuai konteks (jangan berlebihan)\n"
+                "- Format rapi: gunakan bullet points, bold untuk angka penting\n"
+                "- Jawab dalam Bahasa Indonesia yang natural dan santai\n"
+                "- Kalau tidak yakin, berikan range/kemungkinan, bukan jawaban absolut\n"
+                "- Akhiri dengan actionable insight atau pertanyaan follow-up\n"
+                "- Maksimal 500 kata (singkat tapi padat)\n"
+                "- PENTING: Jika user bertanya sesuatu yang tidak terkait crypto/trading, "
+                "  tetap jawab dengan baik lalu kaitkan ke konteks investasi jika memungkinkan"
             )
+
+            # === V6: BUILD MESSAGES WITH MEMORY ===
+            messages = [{"role": "system", "content": system_prompt}]
+
+            # Add conversation memory (last messages for context)
+            if hasattr(self, '_chat_memory') and self._chat_memory:
+                for mem in self._chat_memory[-6:]:  # Last 6 exchanges (3 pairs)
+                    messages.append(mem)
+
+            messages.append({"role": "user", "content": user_message})
 
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                max_tokens=700,
-                temperature=0.75,
+                messages=messages,
+                max_tokens=900,
+                temperature=0.7,
             )
-            return response.choices[0].message.content
+            ai_reply = response.choices[0].message.content
+
+            # Save to memory
+            if not hasattr(self, '_chat_memory'):
+                self._chat_memory = []
+            self._chat_memory.append({"role": "user", "content": user_message})
+            self._chat_memory.append({"role": "assistant", "content": ai_reply})
+            # Keep only last 10 messages
+            if len(self._chat_memory) > 10:
+                self._chat_memory = self._chat_memory[-10:]
+
+            return ai_reply
         except Exception as e:
             safe_print(f"[Groq Error] {e}")
             return (
@@ -914,15 +975,187 @@ class StandaloneBot:
             )
 
     # ============================================
+    # V6: SMART PRICE ALERT
+    # ============================================
+    def check_price_alert(self):
+        """Check if price moved significantly and send alert."""
+        now = time.time()
+        price = self._cache.get('price', 0)
+        if not price or not self.last_alert_price:
+            self.last_alert_price = price
+            return
+
+        # Reset hourly counter
+        if now - self.alerts_hour_reset >= 3600:
+            self.alerts_this_hour = 0
+            self.alerts_hour_reset = now
+
+        # Anti-spam checks
+        if now - self.last_alert_time < self.alert_cooldown:
+            return
+        if self.alerts_this_hour >= self.max_alerts_per_hour:
+            return
+
+        # Calculate change
+        change_pct = ((price - self.last_alert_price) / (self.last_alert_price + 1e-10)) * 100
+
+        if abs(change_pct) >= self.alert_threshold * 100:  # ±3%
+            sig = self._cache.get('ai_signal', {})
+            direction = "📈 NAIK" if change_pct > 0 else "📉 TURUN"
+            emoji = "🚀" if change_pct > 5 else "📈" if change_pct > 0 else "🔻" if change_pct < -5 else "📉"
+
+            lines = [
+                f"{emoji} *PRICE ALERT!*",
+                f"━━━━━━━━━━━━━━━━━━━━━━",
+                f"💰 *ISLM {direction} {abs(change_pct):.1f}%*",
+                f"",
+                f"📊 Sebelum: Rp {self.last_alert_price:,.0f}",
+                f"📊 Sekarang: Rp {price:,.0f}",
+                f"📢 Sinyal: {sig.get('label', 'N/A')}",
+                f"📈 Trend: {sig.get('trend', 'N/A')}",
+            ]
+
+            # Add AI quick comment
+            try:
+                api_key = Config.GROQ_API_KEY or os.environ.get('GROQ_API_KEY', '')
+                if api_key:
+                    from groq import Groq
+                    client = Groq(api_key=api_key)
+                    resp = client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        messages=[
+                            {"role": "system", "content":
+                                "Kamu AI trading. ISLM baru saja bergerak signifikan. "
+                                "Beri komentar singkat 2 kalimat: (1) kenapa ini terjadi, "
+                                "(2) apa yang harus dilakukan trader. Bahasa Indonesia santai."},
+                            {"role": "user", "content":
+                                f"ISLM bergerak {change_pct:+.1f}% dari Rp {self.last_alert_price:,.0f} ke Rp {price:,.0f}. "
+                                f"RSI={self._cache.get('rsi', 50):.0f}, Signal={sig.get('label', 'N/A')}, "
+                                f"Trend={sig.get('trend', 'N/A')}, Whale={self._cache.get('whale_label', 'N/A')}"}
+                        ],
+                        max_tokens=150, temperature=0.7,
+                    )
+                    lines.append(f"\n🧠 *AI:* {resp.choices[0].message.content.strip()}")
+            except: pass
+
+            lines.append(f"\n⏰ {self._cache.get('last_update', '')} WIB")
+            self.send_message("\n".join(lines))
+
+            self.last_alert_price = price
+            self.last_alert_time = now
+            self.alerts_this_hour += 1
+            safe_print(f"[ALERT] Price moved {change_pct:+.1f}% → Alert sent ({self.alerts_this_hour}/{self.max_alerts_per_hour})")
+
+    # ============================================
+    # V6: VOLATILITY ADAPTIVE SYSTEM
+    # ============================================
+    def check_volatility(self):
+        """Monitor volatility and adjust notification frequency."""
+        price = self._cache.get('price', 0)
+        if not price:
+            return
+
+        self.price_samples_5min.append(price)
+        # Keep only last 30 samples (~15 min at 30s poll / ~5 min at 10s)
+        if len(self.price_samples_5min) > 30:
+            self.price_samples_5min = self.price_samples_5min[-30:]
+
+        if len(self.price_samples_5min) < 5:
+            return
+
+        # Calculate short-term volatility
+        prices = self.price_samples_5min
+        avg = sum(prices) / len(prices)
+        variance = sum((p - avg) ** 2 for p in prices) / len(prices)
+        volatility_pct = (variance ** 0.5 / (avg + 1e-10)) * 100
+
+        # Price range in recent samples
+        price_range = ((max(prices) - min(prices)) / (min(prices) + 1e-10)) * 100
+
+        was_volatile = self.volatility_mode
+
+        # High volatility: variance > 0.5% OR range > 2%
+        if volatility_pct > 0.5 or price_range > 2.0:
+            if not self.volatility_mode:
+                self.volatility_mode = True
+                safe_print(f"[VOLATILITY] HIGH detected! Vol={volatility_pct:.2f}%, Range={price_range:.1f}%")
+                self.send_message(
+                    f"⚡ *VOLATILITY ALERT!*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 Market sedang *BERGEJOLAK!*\n"
+                    f"📈 Volatilitas: {volatility_pct:.2f}%\n"
+                    f"📏 Range: {price_range:.1f}%\n\n"
+                    f"🤖 *Bot switch ke MODE AKTIF*\n"
+                    f"  Update setiap 10 menit\n"
+                    f"  Alert otomatis jika ±3%\n\n"
+                    f"💡 _Tetap tenang, ikuti sinyal AI._"
+                )
+        elif volatility_pct < 0.2 and price_range < 1.0:
+            if self.volatility_mode:
+                self.volatility_mode = False
+                safe_print(f"[VOLATILITY] Returned to NORMAL. Vol={volatility_pct:.2f}%")
+                self.send_message(
+                    f"✅ *Market Stabil*\n"
+                    f"Volatilitas kembali normal ({volatility_pct:.2f}%).\n"
+                    f"Bot kembali ke jadwal standar (30m/1h/daily)."
+                )
+
+    def send_volatile_update(self):
+        """Quick update during high volatility periods."""
+        c = self._cache
+        sig = c['ai_signal']
+        prices = self.price_samples_5min
+        if not prices:
+            return
+
+        range_pct = ((max(prices) - min(prices)) / (min(prices) + 1e-10)) * 100
+        recent_change = ((prices[-1] - prices[0]) / (prices[0] + 1e-10)) * 100 if len(prices) >= 2 else 0
+
+        lines = [
+            f"⚡ *VOLATILE MODE UPDATE*",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"💰 Harga: Rp {c['price']:,.0f}",
+            f"📊 Range 5m: {range_pct:.1f}% | Arah: {recent_change:+.1f}%",
+            f"📢 Signal: {sig['label']} ({sig['confidence']*100:.0f}%)",
+            f"📈 Trend: {sig['trend']}",
+            f"🐋 {c['whale_label']}",
+        ]
+
+        # Quick AI take
+        try:
+            api_key = Config.GROQ_API_KEY or os.environ.get('GROQ_API_KEY', '')
+            if api_key:
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                resp = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content":
+                            "Market ISLM sedang volatile. Beri 1 kalimat singkat: "
+                            "aksi yang disarankan sekarang. Bahasa Indonesia."},
+                        {"role": "user", "content":
+                            f"ISLM Rp {c['price']:,.0f}, Range 5m={range_pct:.1f}%, "
+                            f"Signal={sig['label']}, RSI={c['rsi']:.0f}"}
+                    ],
+                    max_tokens=80, temperature=0.7,
+                )
+                lines.append(f"\n🧠 {resp.choices[0].message.content.strip()}")
+        except: pass
+
+        lines.append(f"\n⏰ {c.get('last_update', '')} WIB | ⚡ Mode Aktif")
+        self.send_message("\n".join(lines))
+
+    # ============================================
     # MAIN LOOP
     # ============================================
     def run(self):
         safe_print("=" * 55)
-        safe_print("🤖 ISLM Monitor V4 — Standalone Bot")
+        safe_print("🤖 ISLM Monitor V6 — AI Genius Bot")
         safe_print(f"📡 Token: ...{self.token[-6:]}" if self.token else "❌ NO TOKEN!")
         safe_print(f"💬 Chat ID: {self.chat_id}")
-        safe_print(f"⏱️ Intervals: 30min / 1h / Daily")
-        safe_print(f"🧠 ProTA: {'✅' if True else '❌'} | ML: {'✅' if True else '❌'}")
+        safe_print(f"⏱️ Intervals: 30min / 1h / Daily + Smart Alerts")
+        safe_print(f"🧠 AI V6: Memory + Chain-of-Thought")
+        safe_print(f"⚡ Volatility Mode: Adaptive (10min during turbulence)")
         safe_print("=" * 55)
 
         start_health_server()
@@ -934,21 +1167,26 @@ class StandaloneBot:
         # Initial analysis
         safe_print("[INIT] Running first analysis...")
         if self.refresh_analysis():
+            self.last_alert_price = self._cache.get('price', 0)
             self.send_message(
-                "🟢 *ISLM Bot V4 AKTIF*\n\n"
-                "🧠 AI Engine V4:\n"
-                "  • ProTA (40+ indikator)\n"
+                "🟢 *ISLM Bot V6 AKTIF*\n\n"
+                "🧠 *AI Engine V6:*\n"
+                "  • AI Genius + Memory\n"
+                "  • 13 Faktor Analisis\n"
                 "  • ML GradientBoosting\n"
-                "  • Support/Resistance\n\n"
-                "📡 Notifikasi:\n"
+                "  • Smart Price Alerts\n\n"
+                "📡 *Notifikasi:*\n"
                 "  • ⚡ 30 menit — Quick status\n"
                 "  • 📊 1 jam — Full analysis\n"
-                "  • 📅 Harian — Daily recap\n\n"
+                "  • 📅 Harian — Daily recap\n"
+                "  • 🚨 Alert otomatis — Naik/turun ±3%\n"
+                "  • ⚡ Mode Aktif — Saat market bergejolak\n\n"
+                "💬 Chat apa saja, AI paham bahasa lo!\n"
                 "Ketik /menu untuk semua perintah."
             )
             self.send_1hour_update()
         else:
-            self.send_message("⚠️ *Bot V4 Started* (menunggu data...)")
+            self.send_message("⚠️ *Bot V6 Started* (menunggu data...)")
 
         now = time.time()
         self.last_30min = now
@@ -979,6 +1217,21 @@ class StandaloneBot:
                 # --- Multi-interval notifications ---
                 now = time.time()
 
+                # V6: Smart Price Alert (every poll cycle)
+                try:
+                    if self._cache.get('price'):
+                        self.check_price_alert()
+                        self.check_volatility()
+                except Exception as e:
+                    safe_print(f"[ALERT-ERR] {e}")
+
+                # V6: Volatile mode — extra updates every 10 min
+                if self.volatility_mode and now - self.last_volatile_check >= self.volatile_interval:
+                    safe_print("[VOLATILE] Sending volatile mode update...")
+                    if self.refresh_analysis():
+                        self.send_volatile_update()
+                    self.last_volatile_check = now
+
                 # 30-minute update
                 if now - self.last_30min >= INTERVAL_30MIN:
                     safe_print("[30MIN] Sending quick update...")
@@ -1002,7 +1255,7 @@ class StandaloneBot:
 
             except KeyboardInterrupt:
                 safe_print("\n[EXIT] Bot stopped.")
-                self.send_message("🔴 *Bot V4 Stopped*")
+                self.send_message("🔴 *Bot V6 Stopped*")
                 break
             except Exception as e:
                 safe_print(f"[ERROR] {e}")
