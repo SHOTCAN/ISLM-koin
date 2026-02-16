@@ -84,6 +84,20 @@ PAIR = 'islmidr'
 # ============================================
 class StandaloneBot:
     def __init__(self):
+        # === DEBUG: Dump ALL env vars to find Railway injection issue ===
+        safe_print("[DEBUG] === ENV VARS DEBUG ===")
+        all_keys = sorted(os.environ.keys())
+        safe_print(f"[DEBUG] Total env vars: {len(all_keys)}")
+        # Show all non-system env vars (filter common system ones)
+        custom_keys = [k for k in all_keys if not k.startswith(('_', 'HOME', 'PATH', 'PWD', 'LANG',
+                       'TERM', 'SHLVL', 'HOSTNAME', 'PYTHON', 'PIP', 'GPG'))]
+        safe_print(f"[DEBUG] Custom env vars: {custom_keys}")
+        # Specifically check our keys
+        for key in ['TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID', 'INDODAX_API_KEY', 'GROQ_API_KEY']:
+            val = os.environ.get(key, '<NOT SET>')
+            safe_print(f"[DEBUG] {key} = {'***' + val[-4:] if val != '<NOT SET>' and len(val) > 4 else val}")
+        safe_print("[DEBUG] === END DEBUG ===")
+
         # Try Config first, then direct os.getenv (Railway injects env vars)
         self.token = Config.TELEGRAM_TOKEN or os.environ.get('TELEGRAM_TOKEN', '')
         self.chat_id = Config.TELEGRAM_CHAT_ID or os.environ.get('TELEGRAM_CHAT_ID', '')
@@ -93,7 +107,6 @@ class StandaloneBot:
             safe_print(f"[CONFIG] Token loaded ({'Config' if Config.TELEGRAM_TOKEN else 'os.environ'})")
         else:
             safe_print("[CONFIG] WARNING: No token found in Config or os.environ!")
-            safe_print(f"[CONFIG] Available env keys: {[k for k in os.environ if 'TELEGRAM' in k.upper()]}")
 
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.offset = None
