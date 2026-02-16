@@ -559,13 +559,94 @@ class StandaloneBot:
                 return f"🕯️ *POLA CANDLESTICK:*\n\n" + "\n".join(f"• {p}" for p in c['candle_patterns'])
             return "🕯️ Tidak ada pola terdeteksi."
 
-        # DEFAULT
-        return (
-            "🤖 Coba ketik:\n"
-            "/status — Market\n/predict — Prediksi\n/analisa — Teknikal\n"
-            "/ml — Sinyal ML\n/sinyal — Sinyal AI\n/level — Support/Resistance\n"
-            "/whale — Whale\n/news — Berita\n/candle — Pola\n/security — Keamanan"
-        )
+        # DEFAULT → GROQ AI (Free Llama 3.3 70B)
+        return self._ask_groq_ai(text)
+
+    # ============================================
+    # GROQ AI — Free Llama 3.3 70B Chat
+    # ============================================
+    def _ask_groq_ai(self, user_message):
+        """Send user message to Groq AI with full market context."""
+        api_key = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
+        if not api_key:
+            return (
+                "🤖 Coba ketik:\n"
+                "/status — Market\n/predict — Prediksi\n/analisa — Teknikal\n"
+                "/ml — Sinyal ML\n/sinyal — Sinyal AI\n/level — Support/Resistance\n"
+                "/whale — Whale\n/news — Berita\n/candle — Pola"
+            )
+        try:
+            from groq import Groq
+            client = Groq(api_key=api_key)
+            c = self._cache
+            sig = c["ai_signal"]
+            ml = c["ml_result"]
+
+            # Build rich market context
+            context_lines = [
+                f"HARGA ISLM: Rp {c['price']:,.0f}",
+                f"SINYAL AI: {sig['label']} (Confidence: {sig['confidence']*100:.0f}%)",
+                f"TREND: {sig['trend']} | FASE: {c['market_phase']}",
+                f"RSI: {c['rsi']:.1f} | MACD: {c['macd_val']:.2f} | MACD Hist: {c['hist']:+.2f}",
+                f"Stoch: {c['stoch_k']:.1f}",
+                f"WHALE: {c['whale_label']} ({c['whale_ratio']*100:.0f}% buy)",
+            ]
+            if c['bb_upper']:
+                context_lines.append(f"BB: Rp {c['bb_lower']:,.0f} — Rp {c['bb_upper']:,.0f}")
+            if c['atr']:
+                context_lines.append(f"ATR: {c['atr']:.2f}")
+
+            pta = c.get('pro_ta', {})
+            extras = []
+            if pta.get('adx'): extras.append(f"ADX={pta['adx']:.0f}")
+            if pta.get('mfi'): extras.append(f"MFI={pta['mfi']:.0f}")
+            if pta.get('ema_9') and pta.get('ema_21'):
+                extras.append(f"EMA9{'>' if pta['ema_9'] > pta['ema_21'] else '<'}EMA21")
+            if extras: context_lines.append(f"EXTRA: {' | '.join(extras)}")
+
+            if ml.get('ml_available'):
+                context_lines.append(f"ML SIGNAL: {ml['ml_signal']} ({ml['ml_confidence']*100:.0f}%)")
+            if c['supports']:
+                context_lines.append(f"SUPPORT: {', '.join(f'Rp {s:,.0f}' for s in c['supports'])}")
+            if c['resistances']:
+                context_lines.append(f"RESISTANCE: {', '.join(f'Rp {r:,.0f}' for r in c['resistances'])}")
+
+            for k, p in c["predictions"].items():
+                context_lines.append(f"PREDIKSI {p['label']}: Rp {p['target']:,.0f} ({p['change_pct']:+.1f}%) {p['direction']}")
+
+            context_lines.append("REASONING:")
+            for r in sig.get("reasons", []):
+                context_lines.append(f"  - {r}")
+
+            market_context = "\n".join(context_lines)
+
+            system_prompt = (
+                "Kamu adalah AI analis trading profesional yang fokus pada ISLM (Islamic Coin) / Haqq Network. "
+                "Jawab dalam Bahasa Indonesia yang ringkas dan jelas. "
+                "Kamu punya akses data market real-time berikut:\n\n"
+                f"{market_context}\n\n"
+                "Gunakan data ini untuk menjawab pertanyaan user. "
+                "Berikan analisa yang akurat, sertakan angka-angka penting. "
+                "Jika ditanya tentang hal di luar trading ISLM, tetap jawab tapi kaitkan dengan konteks investasi/crypto. "
+                "Jawab dengan emoji dan format yang rapi. Maksimal 500 kata."
+            )
+
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=600,
+                temperature=0.7,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"[Groq Error] {e}")
+            return (
+                f"🤖 AI sedang sibuk. Gunakan perintah:\n"
+                "/status — Market\n/predict — Prediksi\n/sinyal — Sinyal AI"
+            )
 
     # ============================================
     # MAIN LOOP
