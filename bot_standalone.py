@@ -251,16 +251,55 @@ class StandaloneBot:
     def send_30min_update(self):
         c = self._cache
         sig = c["ai_signal"]
-        self.send_message(
-            f"⚡ *ISLM QUICK UPDATE (30min)*\n"
+        news = NewsEngine.generate_news(c['market_phase'], c['whale_ratio'])
+
+        # Generate AI mini-analysis via Groq
+        ai_insight = ""
+        try:
+            api_key = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
+            if api_key:
+                from groq import Groq
+                client = Groq(api_key=api_key)
+
+                brief_context = (
+                    f"ISLM Rp {c['price']:,.0f}, RSI={c['rsi']:.0f}, "
+                    f"MACD hist={c['hist']:+.2f}, Signal={sig['label']}, "
+                    f"Trend={sig['trend']}, Phase={c['market_phase']}, "
+                    f"Whale={c['whale_label']}"
+                )
+                resp = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content":
+                            "Kamu AI trading analyst. Berikan analisa SINGKAT (max 2 kalimat) "
+                            "tentang kondisi ISLM saat ini dan saran aksi (hold/buy/sell/wait). "
+                            "Bahasa Indonesia santai. Sertakan alasan singkat."},
+                        {"role": "user", "content": brief_context}
+                    ],
+                    max_tokens=150,
+                    temperature=0.7,
+                )
+                ai_insight = resp.choices[0].message.content.strip()
+        except:
+            ai_insight = ""
+
+        msg = (
+            f"⚡ *ISLM UPDATE (30min)*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 Harga: Rp {c['price']:,.0f}\n"
             f"📢 Sinyal: {sig['label']} ({sig['confidence']*100:.0f}%)\n"
             f"📈 Trend: {sig['trend']}\n"
             f"📊 RSI: {c['rsi']:.1f} | MACD: {c['hist']:+.2f}\n"
             f"🐋 Whale: {c['whale_label']}\n"
-            f"⏰ {c['last_update']} WIB"
         )
+
+        if ai_insight:
+            msg += f"\n🧠 *AI Insight:*\n{ai_insight}\n"
+
+        msg += f"\n📰 *News:* {news}\n"
+        msg += f"⏰ {c['last_update']} WIB"
+
+        self.send_message(msg)
 
     # ============================================
     # NOTIFICATION: 1 Jam — Full Analysis
