@@ -183,10 +183,10 @@ def login_page():
 
 
 # ============================================
-# GROQ AI CHATBOT (100% FREE — Llama 3.3 70B)
+# GROQ AI CHATBOT V5 (100% FREE — Llama 3.3 70B)
 # ============================================
 def _ai_chat(prompt, market_context):
-    """Send prompt to Groq API (free) with market context."""
+    """Send prompt to Groq API (free) with market context + empathy."""
     api_key = Config._get_config('GROQ_API_KEY', '')
     if not api_key:
         return None  # Fallback to rule-based
@@ -195,14 +195,29 @@ def _ai_chat(prompt, market_context):
         from groq import Groq
         client = Groq(api_key=api_key)
         system_prompt = (
-            "Kamu adalah AI analis trading profesional yang fokus pada ISLM (Islamic Coin) / Haqq Network. "
-            "Jawab dalam Bahasa Indonesia yang ringkas dan jelas. "
-            "Kamu punya akses data market real-time berikut:\n\n"
-            f"{market_context}\n\n"
-            "Gunakan data ini untuk menjawab pertanyaan user. "
-            "Berikan analisa yang akurat, sertakan angka-angka penting. "
-            "Jika ditanya tentang hal di luar trading ISLM, tetap jawab tapi kaitkan dengan konteks investasi/crypto. "
-            "Format jawaban dengan emoji dan markdown yang rapi."
+            "Kamu adalah ISLM AI Assistant — AI sahabat trading yang pintar, hangat, dan pengertian. "
+            "Jawab dalam Bahasa Indonesia yang santai tapi profesional.\n\n"
+
+            "KEPRIBADIAN:\n"
+            "- Ramah, supportif, empatis. Kalau user curhat atau frustasi, dengarkan dan beri semangat.\n"
+            "- Bukan robot kaku. Jawab seperti teman yang pintar dan care.\n"
+            "- Kalau rugi, beri motivasi + saran risk management.\n"
+            "- Kalau profit, ikut senang tapi ingatkan untuk hati-hati.\n\n"
+
+            "KEMAMPUAN:\n"
+            "- Teknikal: RSI, MACD, BB, Fibonacci, S/R, Ichimoku, ADX\n"
+            "- Prediksi: Monte Carlo GBM, ML GradientBoosting\n"
+            "- Risk: Sharpe Ratio, Max Drawdown, Win Rate, VaR\n"
+            "- Multi-coin: BTC, ETH, SOL, XRP, DOGE dll di Indodax\n"
+            "- Curhat: bisa ngobrol santai tentang apapun\n\n"
+
+            f"DATA REAL-TIME:\n{market_context}\n\n"
+
+            "ATURAN:\n"
+            "- Sertakan angka dan data real-time\n"
+            "- Gunakan emoji sesuai\n"
+            "- Format rapi dengan markdown\n"
+            "- Jangan bilang 'tidak bisa' — selalu coba bantu"
         )
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -211,7 +226,7 @@ def _ai_chat(prompt, market_context):
                 {"role": "user", "content": prompt}
             ],
             max_tokens=800,
-            temperature=0.7,
+            temperature=0.75,
         )
         return response.choices[0].message.content
     except Exception as e:

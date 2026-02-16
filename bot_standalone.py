@@ -44,7 +44,9 @@ from backend.core_logic import (
     MarketProjector, FundamentalEngine, QuantAnalyzer,
     CandleSniper, WhaleTracker, AISignalEngine,
     ProTA, MLSignalClassifier, SupportResistance, NewsEngine,
+    BTCCorrelation, RiskMetrics, TrendStrengthIndex,
 )
+from backend.security_engine import SecurityEngine
 
 import requests
 
@@ -87,6 +89,7 @@ class StandaloneBot:
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.offset = None
         self.api = IndodaxAPI(Config.API_KEY, Config.SECRET_KEY)
+        self.security = SecurityEngine(self.token, self.chat_id)
 
         # Interval timers
         self.last_30min = 0
@@ -414,19 +417,29 @@ class StandaloneBot:
         # /start /menu /help
         if t in ['/start', '/menu', '/help', 'help', 'bantuan', 'menu']:
             return (
-                "🤖 *ISLM AI BOT V4 — MENU*\n\n"
-                "*Perintah:*\n"
-                "📈 /status — Kondisi market\n"
-                "🔮 /predict — Prediksi harga\n"
-                "📊 /analisa — Analisa teknikal lengkap\n"
-                "🤖 /ml — Sinyal ML (AI)\n"
-                "📰 /news — Berita & fundamental\n"
-                "🐋 /whale — Aktivitas whale\n"
-                "📢 /sinyal — Sinyal AI lengkap\n"
-                "📐 /level — Support & Resistance\n"
-                "🔐 /security — Status keamanan\n"
-                "🕯️ /candle — Pola candlestick\n\n"
-                "💬 Atau tanya bebas: _\"ISLM naik gak?\"_"
+                "🤖 *ISLM AI V5 — MENU*\n\n"
+                "*📊 Market:*\n"
+                "  /status — Kondisi market\n"
+                "  /predict — Prediksi harga\n"
+                "  /analisa — Teknikal lengkap\n"
+                "  /sinyal — Sinyal AI\n"
+                "  /ml — Sinyal ML\n\n"
+                "*🪙 Multi-Coin:*\n"
+                "  /coin — Top coins Indodax\n"
+                "  /coin btc — Harga BTC\n"
+                "  /coin eth — Harga ETH\n\n"
+                "*📈 Advanced:*\n"
+                "  /risk — Sharpe, MaxDD, WinRate\n"
+                "  /level — Support & Resistance\n"
+                "  /whale — Whale tracker\n"
+                "  /candle — Pola candlestick\n"
+                "  /news — Berita & fundamental\n\n"
+                "*🛡️ Security:*\n"
+                "  /security — Status keamanan\n\n"
+                "💬 *CHAT BEBAS:* Tanya apa saja!\n"
+                "_Contoh: \"ISLM naik gak?\"_\n"
+                "_Contoh: \"Lagi galau, rugi trading...\"_\n"
+                "_Contoh: \"Bandingin BTC vs ISLM\"_"
             )
 
         # STATUS
@@ -553,14 +566,66 @@ class StandaloneBot:
                 lines.append("🔴 Resistance: Belum cukup data")
             return "\n".join(lines)
 
-        # SECURITY
+        # COIN — Multi-Coin Check
+        if any(k in t for k in ['/coin', '/harga']):
+            parts = text.strip().split()
+            if len(parts) >= 2:
+                coin_name = parts[1].lower().replace('/', '')
+                pair = f"{coin_name}idr"
+                try:
+                    p = self.api.get_price(pair)
+                    if p.get('success'):
+                        return (
+                            f"💰 *{coin_name.upper()}/IDR*\n\n"
+                            f"💵 Harga: Rp {p['last']:,.0f}\n"
+                            f"📈 High 24h: Rp {p['high']:,.0f}\n"
+                            f"📉 Low 24h: Rp {p['low']:,.0f}\n"
+                            f"📊 Volume: {p['vol']:,.2f}\n\n"
+                            f"_Ketik nama coin untuk analisa AI:_\n"
+                            f"_Contoh: \"analisa {coin_name.upper()} dong\"_"
+                        )
+                    else:
+                        return f"❌ Coin '{coin_name.upper()}' tidak ditemukan di Indodax."
+                except:
+                    return f"❌ Gagal ambil data {coin_name.upper()}"
+            else:
+                # Show top coins
+                try:
+                    prices = self.api.get_multi_price(['islmidr', 'btcidr', 'ethidr', 'xrpidr', 'dogeidr'])
+                    lines = ["💰 *TOP COINS INDODAX*\n"]
+                    names = {'islmidr': 'ISLM ⭐', 'btcidr': 'BTC', 'ethidr': 'ETH', 'xrpidr': 'XRP', 'dogeidr': 'DOGE'}
+                    for pair_id, name in names.items():
+                        if pair_id in prices:
+                            p = prices[pair_id]
+                            lines.append(f"  {name}: Rp {p['last']:,.0f}")
+                    lines.append("\n_Ketik_ `/coin btc` _untuk detail._")
+                    return "\n".join(lines)
+                except:
+                    return "❌ Gagal ambil data multi-coin"
+
+        # RISK METRICS
+        if any(k in t for k in ['/risk', 'risiko', 'sharpe', 'drawdown']):
+            if len(self.price_history) >= 10:
+                risk = RiskMetrics.full_report(self.price_history)
+                return (
+                    f"📊 *RISK METRICS ISLM*\n\n"
+                    f"📈 Sharpe Ratio: {risk['sharpe']:.2f}\n"
+                    f"📉 Max Drawdown: {risk['max_dd']:.1f}%\n"
+                    f"✅ Win Rate: {risk['win_rate']:.0f}%\n"
+                    f"⚠️ VaR (95%): {risk['var_95']:.2f}%\n\n"
+                    f"{'🟢 Risiko RENDAH' if risk['max_dd'] < 5 else '🟡 Risiko SEDANG' if risk['max_dd'] < 15 else '🔴 Risiko TINGGI'}"
+                )
+            return "⏳ Belum cukup data untuk risk metrics (min 10 data point)"
+
+        # SECURITY — V5 Enhanced
         if any(k in t for k in ['/security', 'keamanan', 'aman', 'security']):
             uptime = (time.time() - self.start_time) / 3600
+            sec_report = self.security.get_full_report()
             return (
-                f"🛡️ *STATUS KEAMANAN*\n\n"
-                f"✅ Bot V4: *Aktif*\n"
+                f"{sec_report}\n\n"
+                f"✅ Bot V5: *Aktif*\n"
                 f"✅ ML Engine: *{'Aktif' if ml.get('ml_available') else 'Loading'}*\n"
-                f"✅ ProTA (40+ indicators): *Aktif*\n"
+                f"✅ ProTA: *Aktif* | V5 Modules: *Aktif*\n"
                 f"🔑 API Keys: *Env Variables*\n"
                 f"📡 Auto: 30m + 1h + Daily\n"
                 f"⏱️ Uptime: {uptime:.1f} jam"
@@ -576,10 +641,10 @@ class StandaloneBot:
         return self._ask_groq_ai(text)
 
     # ============================================
-    # GROQ AI — Free Llama 3.3 70B Chat
+    # GROQ AI V5 — Empathetic + Multi-Coin + Smart
     # ============================================
     def _ask_groq_ai(self, user_message):
-        """Send user message to Groq AI with full market context."""
+        """Send user message to Groq AI with full market context + empathy."""
         api_key = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
         if not api_key:
             return (
@@ -590,13 +655,15 @@ class StandaloneBot:
             )
         try:
             from groq import Groq
+            from backend.core_logic import BTCCorrelation, RiskMetrics
             client = Groq(api_key=api_key)
             c = self._cache
             sig = c["ai_signal"]
             ml = c["ml_result"]
 
-            # Build rich market context
+            # Build rich V5 market context
             context_lines = [
+                f"=== DATA ISLM REAL-TIME ===",
                 f"HARGA ISLM: Rp {c['price']:,.0f}",
                 f"SINYAL AI: {sig['label']} (Confidence: {sig['confidence']*100:.0f}%)",
                 f"TREND: {sig['trend']} | FASE: {c['market_phase']}",
@@ -615,7 +682,7 @@ class StandaloneBot:
             if pta.get('mfi'): extras.append(f"MFI={pta['mfi']:.0f}")
             if pta.get('ema_9') and pta.get('ema_21'):
                 extras.append(f"EMA9{'>' if pta['ema_9'] > pta['ema_21'] else '<'}EMA21")
-            if extras: context_lines.append(f"EXTRA: {' | '.join(extras)}")
+            if extras: context_lines.append(f"INDIKATOR: {' | '.join(extras)}")
 
             if ml.get('ml_available'):
                 context_lines.append(f"ML SIGNAL: {ml['ml_signal']} ({ml['ml_confidence']*100:.0f}%)")
@@ -627,21 +694,72 @@ class StandaloneBot:
             for k, p in c["predictions"].items():
                 context_lines.append(f"PREDIKSI {p['label']}: Rp {p['target']:,.0f} ({p['change_pct']:+.1f}%) {p['direction']}")
 
-            context_lines.append("REASONING:")
+            # V5: BTC Correlation
+            try:
+                btc_price = BTCCorrelation.fetch_btc_price()
+                if btc_price > 0:
+                    context_lines.append(f"\n=== CROSS-MARKET ===")
+                    context_lines.append(f"BTC/IDR: Rp {btc_price:,.0f}")
+            except: pass
+
+            # V5: Risk Metrics
+            try:
+                if len(self.price_history) >= 10:
+                    risk = RiskMetrics.full_report(self.price_history)
+                    context_lines.append(f"\n=== RISK METRICS ===")
+                    context_lines.append(f"Sharpe Ratio: {risk['sharpe']:.2f}")
+                    context_lines.append(f"Max Drawdown: {risk['max_dd']:.1f}%")
+                    context_lines.append(f"Win Rate: {risk['win_rate']:.0f}%")
+                    context_lines.append(f"VaR (95%): {risk['var_95']:.2f}%")
+            except: pass
+
+            # V5: Multi-coin check (if user asks about other coins)
+            msg_lower = user_message.lower()
+            other_coins = {'btc': 'btcidr', 'eth': 'ethidr', 'sol': 'solidr',
+                          'xrp': 'xrpidr', 'doge': 'dogeidr', 'ada': 'adaidr',
+                          'dot': 'dotidr', 'bnb': 'bnbidr', 'link': 'linkidr'}
+            for coin_name, pair in other_coins.items():
+                if coin_name in msg_lower:
+                    try:
+                        p = self.api.get_price(pair)
+                        if p.get('success'):
+                            context_lines.append(f"\n=== {coin_name.upper()} ===")
+                            context_lines.append(f"{coin_name.upper()}/IDR: Rp {p['last']:,.0f} | H: Rp {p['high']:,.0f} | L: Rp {p['low']:,.0f}")
+                    except: pass
+
+            context_lines.append("\nREASONING AI:")
             for r in sig.get("reasons", []):
                 context_lines.append(f"  - {r}")
 
             market_context = "\n".join(context_lines)
 
             system_prompt = (
-                "Kamu adalah AI analis trading profesional yang fokus pada ISLM (Islamic Coin) / Haqq Network. "
-                "Jawab dalam Bahasa Indonesia yang ringkas dan jelas. "
-                "Kamu punya akses data market real-time berikut:\n\n"
-                f"{market_context}\n\n"
-                "Gunakan data ini untuk menjawab pertanyaan user. "
-                "Berikan analisa yang akurat, sertakan angka-angka penting. "
-                "Jika ditanya tentang hal di luar trading ISLM, tetap jawab tapi kaitkan dengan konteks investasi/crypto. "
-                "Jawab dengan emoji dan format yang rapi. Maksimal 500 kata."
+                "Kamu adalah ISLM AI Assistant — AI sahabat trading yang pintar, hangat, dan pengertian. "
+                "Nama kamu 'ISLM AI'. Kamu fokus pada ISLM (Islamic Coin) / Haqq Network, tapi juga paham coin lain di Indodax.\n\n"
+
+                "KEPRIBADIAN:\n"
+                "- Kamu ramah, supportif, dan empatis. Kalau user curhat atau frustasi soal trading, dengarkan dan beri semangat.\n"
+                "- Kamu BUKAN robot kaku. Jawab seperti teman yang pintar dan care.\n"
+                "- Kalau user sedih karena rugi, beri motivasi dan saran risk management.\n"
+                "- Kalau user senang karena profit, ikut senang tapi ingatkan untuk tetap hati-hati.\n"
+                "- Gunakan Bahasa Indonesia yang santai tapi profesional.\n\n"
+
+                "KEMAMPUAN:\n"
+                "- Analisis teknikal mendalam (RSI, MACD, BB, Fibonacci, S/R, dll)\n"
+                "- Prediksi harga berdasarkan data (Monte Carlo, ML)\n"
+                "- Risk metrics (Sharpe, MaxDD, WinRate, VaR)\n"
+                "- Bisa jawab tentang coin lain di Indodax (BTC, ETH, SOL, dll)\n"
+                "- Bisa ngobrol santai tentang topik apapun — tapi kaitkan ke crypto/investasi\n\n"
+
+                f"DATA REAL-TIME:\n{market_context}\n\n"
+
+                "ATURAN:\n"
+                "- Selalu sertakan angka dan data real-time dalam jawaban\n"
+                "- Gunakan emoji yang sesuai\n"
+                "- Format jawaban rapi dan mudah dibaca\n"
+                "- Kalau ditanya di luar crypto, tetap jawab tapi kaitkan ke konteks investasi\n"
+                "- Jangan pernah bilang 'saya tidak bisa' — selalu coba bantu\n"
+                "- Maksimal 600 kata"
             )
 
             response = client.chat.completions.create(
@@ -650,8 +768,8 @@ class StandaloneBot:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
-                max_tokens=600,
-                temperature=0.7,
+                max_tokens=700,
+                temperature=0.75,
             )
             return response.choices[0].message.content
         except Exception as e:

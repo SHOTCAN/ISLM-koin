@@ -498,6 +498,141 @@ class QuantAnalyzer:
 
 
 # ============================================
+# BTC CORRELATION ANALYZER (V5)
+# ============================================
+class BTCCorrelation:
+    """Analisis korelasi ISLM vs BTC untuk sinyal cross-market."""
+
+    @staticmethod
+    def fetch_btc_price():
+        """Ambil harga BTC/IDR dari Indodax."""
+        try:
+            r = requests.get('https://indodax.com/api/ticker/btcidr', timeout=8)
+            return float(r.json().get('ticker', {}).get('last', 0))
+        except:
+            return 0
+
+    @staticmethod
+    def calculate_correlation(prices_a, prices_b):
+        """Hitung korelasi Pearson antara dua deret harga."""
+        if len(prices_a) < 10 or len(prices_b) < 10:
+            return 0.0
+        n = min(len(prices_a), len(prices_b))
+        a, b = np.array(prices_a[-n:], dtype=float), np.array(prices_b[-n:], dtype=float)
+        if np.std(a) < 1e-10 or np.std(b) < 1e-10:
+            return 0.0
+        return float(np.corrcoef(a, b)[0, 1])
+
+    @staticmethod
+    def interpret(corr):
+        """Interpretasi korelasi."""
+        if corr > 0.7: return f"KORELASI TINGGI ({corr:.2f}) — ISLM ikut BTC 📊"
+        if corr > 0.3: return f"KORELASI SEDANG ({corr:.2f}) — ISLM agak ikut BTC 🔗"
+        if corr > -0.3: return f"KORELASI RENDAH ({corr:.2f}) — ISLM independen 🆓"
+        return f"KORELASI NEGATIF ({corr:.2f}) — ISLM berlawanan BTC ↕️"
+
+
+# ============================================
+# RISK METRICS (V5)
+# ============================================
+class RiskMetrics:
+    """Metrik risiko: Sharpe, MaxDrawdown, WinRate, VaR."""
+
+    @staticmethod
+    def sharpe_ratio(prices, risk_free_rate=0.0):
+        """Sharpe Ratio — return per unit risiko."""
+        if len(prices) < 5: return 0.0
+        returns = np.diff(prices) / (np.array(prices[:-1]) + 1e-10)
+        excess = returns - risk_free_rate / 365
+        std = np.std(excess)
+        if std < 1e-10: return 0.0
+        return float(np.mean(excess) / std * np.sqrt(365))
+
+    @staticmethod
+    def max_drawdown(prices):
+        """Max Drawdown — kerugian max dari peak."""
+        if len(prices) < 2: return 0.0
+        peak = np.maximum.accumulate(prices)
+        dd = (peak - prices) / (peak + 1e-10) * 100
+        return float(np.max(dd))
+
+    @staticmethod
+    def win_rate(prices):
+        """Win Rate — persentase candle hijau."""
+        if len(prices) < 2: return 50.0
+        returns = np.diff(prices)
+        wins = np.sum(returns > 0)
+        return float(wins / len(returns) * 100)
+
+    @staticmethod
+    def value_at_risk(prices, confidence=0.95):
+        """VaR — potensi kerugian pada confidence level."""
+        if len(prices) < 10: return 0.0
+        returns = np.diff(prices) / (np.array(prices[:-1]) + 1e-10)
+        return float(np.percentile(returns, (1 - confidence) * 100) * 100)
+
+    @staticmethod
+    def full_report(prices):
+        """Laporan risiko lengkap."""
+        return {
+            'sharpe': RiskMetrics.sharpe_ratio(prices),
+            'max_dd': RiskMetrics.max_drawdown(prices),
+            'win_rate': RiskMetrics.win_rate(prices),
+            'var_95': RiskMetrics.value_at_risk(prices, 0.95),
+        }
+
+
+# ============================================
+# TREND STRENGTH INDEX (V5)
+# ============================================
+class TrendStrengthIndex:
+    """Gabungan ADX + EMA slope + volume trend = skor kekuatan trend."""
+
+    @staticmethod
+    def calculate(pro_ta, prices, volumes=None):
+        """Hitung Trend Strength 0-100."""
+        score = 50  # Netral
+
+        # ADX contribution (0-30 points)
+        adx = pro_ta.get('adx', 25) if pro_ta else 25
+        if adx > 40: score += 25
+        elif adx > 25: score += 15
+        elif adx < 15: score -= 10
+
+        # EMA slope (0-20 points)
+        if len(prices) >= 21:
+            ema9 = float(pd.Series(prices).ewm(span=9).mean().iloc[-1])
+            ema21 = float(pd.Series(prices).ewm(span=21).mean().iloc[-1])
+            if ema9 > ema21: score += 15
+            else: score -= 10
+
+        # Price momentum (0-15 points)
+        if len(prices) >= 5:
+            momentum = (prices[-1] - prices[-5]) / (prices[-5] + 1e-10) * 100
+            if momentum > 3: score += 15
+            elif momentum > 1: score += 8
+            elif momentum < -3: score -= 15
+            elif momentum < -1: score -= 8
+
+        # Volume trend (0-10 points)
+        if volumes and len(volumes) >= 10:
+            recent_vol = np.mean(volumes[-5:])
+            older_vol = np.mean(volumes[-10:-5])
+            if recent_vol > older_vol * 1.3: score += 10
+            elif recent_vol < older_vol * 0.7: score -= 5
+
+        return max(0, min(100, score))
+
+    @staticmethod
+    def interpret(score):
+        if score >= 80: return "TREND SANGAT KUAT 🔥🔥🔥"
+        if score >= 60: return "TREND KUAT 🔥🔥"
+        if score >= 40: return "TREND SEDANG 🔥"
+        if score >= 20: return "TREND LEMAH 💤"
+        return "TIDAK ADA TREND ❌"
+
+
+# ============================================
 # UNIFIED AI SIGNAL ENGINE V4
 # ============================================
 class AISignalEngine:

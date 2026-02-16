@@ -67,6 +67,40 @@ class IndodaxAPI:
         except:
             return {'success': False}
 
+    def get_all_pairs(self):
+        """Get all available trading pairs from Indodax."""
+        try:
+            r = requests.get('https://indodax.com/api/pairs', headers=self._headers, timeout=10)
+            pairs = r.json()
+            return [{'id': p['id'], 'symbol': p['ticker_id'],
+                     'base': p['traded_currency'], 'quote': p['base_currency'],
+                     'description': p.get('description', '')}
+                    for p in pairs if p.get('base_currency') == 'idr']
+        except:
+            return []
+
+    def get_multi_price(self, pairs=None):
+        """Get prices for multiple coins at once."""
+        if pairs is None:
+            pairs = ['islmidr', 'btcidr', 'ethidr', 'soludr', 'xrpidr']
+        try:
+            r = requests.get('https://indodax.com/api/summaries', headers=self._headers, timeout=10)
+            data = r.json().get('tickers', {})
+            results = {}
+            for pair in pairs:
+                if pair in data:
+                    t = data[pair]
+                    results[pair] = {
+                        'last': float(t.get('last', 0)),
+                        'high': float(t.get('high', 0)),
+                        'low': float(t.get('low', 0)),
+                        'vol': float(t.get('vol_' + pair.replace('idr', ''), t.get('vol_idr', 0))),
+                        'change': float(t.get('price_24h', 0)),
+                    }
+            return results
+        except:
+            return {}
+
     def get_depth(self, pair='islmidr'):
         try:
             r = requests.get(
