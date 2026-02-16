@@ -6,12 +6,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from backend.api import IndodaxAPI
 from backend.core_logic import (
-    MarketProjector,
-    FundamentalEngine,
-    QuantAnalyzer,
-    CandleSniper,
-    WhaleTracker,
-    AISignalEngine,
+    MarketProjector, FundamentalEngine, QuantAnalyzer,
+    CandleSniper, WhaleTracker, AISignalEngine,
+    ProTA, MLSignalClassifier, SupportResistance, NewsEngine,
 )
 from backend.auth_engine import AuthEngine
 from backend.telegram_bot import TelegramBot
@@ -20,124 +17,146 @@ import threading
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="ISLM Monitor V3 ☁️",
+    page_title="ISLM Monitor V4",
     page_icon="🕌",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# --- BACKGROUND MONITOR (24/7 BOT) ---
-@st.cache_resource
-class BackgroundMonitor:
-    def __init__(self):
-        self.running = True
-        self.thread = threading.Thread(target=self.run_loop, daemon=True)
-        self.thread.start()
-
-    def run_loop(self):
-        bot = TelegramBot()
-        api = IndodaxAPI(Config.API_KEY, Config.SECRET_KEY)
-        last_price = 0
-        offset = None
-
-        while self.running:
-            try:
-                offset = bot.handle_updates(offset, api)
-
-                ticker = api.get_price('islmidr')
-                if not ticker.get('success'):
-                    time.sleep(60)
-                    continue
-                price = ticker['last']
-
-                candles = api.get_kline('islmidr', '15')
-                if candles and len(candles) > 5:
-                    if last_price == 0:
-                        last_price = price
-                    closes = pd.DataFrame(candles)['close'].values
-                    rsi = QuantAnalyzer.calculate_rsi(closes)
-                    _, _, hist = QuantAnalyzer.calculate_macd(closes)
-                    bb_upper, bb_mid, bb_lower = QuantAnalyzer.calculate_bollinger_bands(closes)
-                    depth = api.get_depth('islmidr') or {}
-                    whale_ratio = WhaleTracker.get_whale_ratio(
-                        depth.get('buy', []), depth.get('sell', []), 0.1
-                    )
-                    f_score, _ = FundamentalEngine.analyze_market_sentiment()
-                    patterns = CandleSniper.analyze_patterns(candles)
-                    bull_k = ("HAMMER", "INV. HAMMER", "BULL ENGULFING", "MORNING STAR")
-                    bear_k = ("HANGING MAN", "SHOOTING STAR", "BEAR ENGULFING", "EVENING STAR")
-                    cb = sum(1 for p in patterns if any(k in p for k in bull_k))
-                    cbe = sum(1 for p in patterns if any(k in p for k in bear_k))
-                    ai_signal = AISignalEngine.compute(
-                        rsi=rsi, macd_hist=hist, price=price, bb_mid=bb_mid,
-                        bb_upper=bb_upper, bb_lower=bb_lower,
-                        candle_bull_count=cb, candle_bear_count=cbe,
-                        whale_ratio=whale_ratio, fundamental_score=f_score,
-                    )
-                    signal = ai_signal["label"]
-                    if abs(price - last_price) / (last_price + 1e-10) > 0.02:
-                        bot.send_dashboard_menu(price, (price - last_price) / last_price * 100, rsi, signal)
-                        last_price = price
-
-            except Exception as e:
-                print(f"Bg Loop Error: {e}")
-
-            time.sleep(60)
-
-# Start Background Thread
-if 'monitor' not in st.session_state:
-    st.session_state.monitor = BackgroundMonitor()
-
-# --- CSS STYLING ---
+# --- PREMIUM CSS ---
 st.markdown("""
 <style>
-    .stApp { background-color: #0d1117; color: #e6edf3; }
-    .metric-card { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
-    h1, h2, h3 { color: #58a6ff; font-family: 'Segoe UI', sans-serif; }
-    .stButton>button { width: 100%; border-radius: 5px; font-weight: bold; }
-    .stButton>button:hover { border-color: #58a6ff; color: #58a6ff; }
-    .reason-box { background: #161b22; border-left: 3px solid #58a6ff; padding: 10px; margin: 5px 0; border-radius: 5px; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+    * { font-family: 'Inter', sans-serif; }
+    .stApp { background: #0a0e17; color: #c9d1d9; }
+
+    /* Header gradient */
+    .header-bar {
+        background: linear-gradient(135deg, #0d1b2a 0%, #1b2838 50%, #0d4b3c 100%);
+        padding: 20px 30px; border-radius: 16px;
+        border: 1px solid rgba(88,166,255,0.15);
+        margin-bottom: 20px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    }
+    .header-bar h1 { color: #7ee8c7; margin: 0; font-size: 1.6rem; font-weight: 700; }
+    .header-bar p { color: #8b949e; margin: 4px 0 0 0; font-size: 0.85rem; }
+
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background: linear-gradient(145deg, #161b22, #1c2333);
+        padding: 16px; border-radius: 12px;
+        border: 1px solid #30363d;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    }
+    [data-testid="stMetricLabel"] { color: #8b949e; font-size: 0.75rem; font-weight: 500; }
+    [data-testid="stMetricValue"] { color: #e6edf3; font-weight: 600; }
+
+    /* Signal badge */
+    .signal-badge {
+        display: inline-block; padding: 6px 16px; border-radius: 8px;
+        font-weight: 600; font-size: 0.9rem;
+    }
+    .signal-buy { background: linear-gradient(135deg, #0a3d1c, #155d2e); color: #7ee8c7; border: 1px solid #238636; }
+    .signal-sell { background: linear-gradient(135deg, #3d0a0a, #5d1515); color: #f85149; border: 1px solid #da3633; }
+    .signal-hold { background: linear-gradient(135deg, #2d2a0a, #4d4515); color: #d29922; border: 1px solid #9e6a03; }
+
+    /* Reason box */
+    .reason-box {
+        background: #161b22; border-left: 3px solid #238636;
+        padding: 10px 14px; margin: 4px 0; border-radius: 6px;
+        font-size: 0.85rem; color: #c9d1d9;
+    }
+
+    /* AI chat */
+    .ai-context {
+        background: linear-gradient(135deg, #0d1b2a, #0d2818);
+        border: 1px solid rgba(126,232,199,0.2);
+        padding: 14px; border-radius: 10px; margin: 8px 0;
+        font-size: 0.85rem;
+    }
+
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] {
+        background: #161b22; border-radius: 8px; border: 1px solid #30363d;
+        padding: 8px 16px; color: #8b949e;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #0d4b3c, #1b5e4a); color: #7ee8c7;
+        border-color: #238636;
+    }
+
+    /* Buttons */
+    .stButton>button {
+        border-radius: 8px; font-weight: 500; border: 1px solid #30363d;
+        background: #161b22; color: #c9d1d9; transition: all 0.2s;
+    }
+    .stButton>button:hover { border-color: #7ee8c7; color: #7ee8c7; background: #1c2333; }
+
+    /* Hide Streamlit extras */
+    #MainMenu, footer, header { visibility: hidden; }
+    .block-container { padding-top: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- SECURITY & CONFIG ---
+# --- SECURITY ---
 MAX_LOGIN_ATTEMPTS = 3
 SESSION_TIMEOUT = 15 * 60
-OTP_COOLDOWN = 60  # seconds between OTP requests
+OTP_COOLDOWN = 60
+LOCKOUT_TIME = 300  # 5 min lockout
 
-# --- SESSION STATE INIT ---
-if 'authenticated' not in st.session_state: st.session_state.authenticated = False
-if 'last_activity' not in st.session_state: st.session_state.last_activity = time.time()
-if 'login_attempts' not in st.session_state: st.session_state.login_attempts = 0
-if 'otp_sent' not in st.session_state: st.session_state.otp_sent = False
-if 'generated_otp' not in st.session_state: st.session_state.generated_otp = None
-if 'last_otp_time' not in st.session_state: st.session_state.last_otp_time = 0
+# --- SESSION STATE ---
+defaults = {
+    'authenticated': False, 'last_activity': time.time(),
+    'login_attempts': 0, 'otp_sent': False,
+    'generated_otp': None, 'last_otp_time': 0,
+    'lockout_until': 0, 'messages': [],
+}
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# Check Timeout
+# Session Timeout
 if st.session_state.authenticated:
     if time.time() - st.session_state.last_activity > SESSION_TIMEOUT:
         st.session_state.authenticated = False
         st.session_state.otp_sent = False
-        st.error("⚠️ Sesi habis. Silakan login ulang.")
     else:
         st.session_state.last_activity = time.time()
 
 
+# ============================================
+# LOGIN PAGE (Enhanced Security)
+# ============================================
 def login_page():
-    st.title("🔐 Security Checkpoint")
-    st.write("Akses terbatas. Masukkan Kode Otentikasi 2FA via Telegram.")
+    st.markdown("""
+    <div style="display:flex;justify-content:center;align-items:center;min-height:60vh;">
+    <div style="background:linear-gradient(145deg,#161b22,#1c2333);padding:40px;border-radius:16px;
+    border:1px solid #30363d;max-width:420px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+    <h2 style="color:#7ee8c7;text-align:center;margin:0 0 4px 0;">🔐 ISLM Monitor</h2>
+    <p style="color:#8b949e;text-align:center;font-size:0.8rem;margin-bottom:24px;">
+    Akses terbatas — Autentikasi 2FA via Telegram</p>
+    </div></div>
+    """, unsafe_allow_html=True)
 
-    if st.session_state.login_attempts >= MAX_LOGIN_ATTEMPTS:
-        st.error("⛔ SISTEM TERKUNCI: Terlalu banyak percobaan gagal. Tunggu 5 menit.")
+    # Lockout check
+    if time.time() < st.session_state.lockout_until:
+        remaining = int(st.session_state.lockout_until - time.time())
+        st.error(f"⛔ Terkunci. Tunggu {remaining} detik.")
         return
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("📡 KIRIM KODE KE TELEGRAM"):
-            # Rate limiting
+    if st.session_state.login_attempts >= MAX_LOGIN_ATTEMPTS:
+        st.session_state.lockout_until = time.time() + LOCKOUT_TIME
+        st.session_state.login_attempts = 0
+        st.error("⛔ Terlalu banyak percobaan. Terkunci 5 menit.")
+        return
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("📡 KIRIM KODE OTP KE TELEGRAM", use_container_width=True):
             elapsed = time.time() - st.session_state.last_otp_time
             if elapsed < OTP_COOLDOWN:
-                st.warning(f"⏳ Tunggu {int(OTP_COOLDOWN - elapsed)}s sebelum kirim ulang.")
+                st.warning(f"⏳ Tunggu {int(OTP_COOLDOWN - elapsed)}s")
             else:
                 auth = AuthEngine()
                 otp = auth.generate_otp()
@@ -146,22 +165,99 @@ def login_page():
                     st.session_state.result_otp = otp
                     st.session_state.otp_sent = True
                     st.session_state.last_otp_time = time.time()
-                    st.success("✅ Kode OTP telah dikirim ke Telegram!")
+                    st.success("✅ Kode dikirim ke Telegram!")
                 else:
                     st.error(msg)
 
-    if st.session_state.otp_sent:
-        user_otp = st.text_input("Masukkan 6-Digit Kode:", type="password")
-        if st.button("🚪 MASUK SISTEM"):
-            if user_otp == st.session_state.result_otp:
-                st.session_state.authenticated = True
-                st.session_state.login_attempts = 0
-                st.success("✅ Akses Diterima!")
-                st.rerun()
-            else:
-                st.session_state.login_attempts += 1
-                attempts_left = MAX_LOGIN_ATTEMPTS - st.session_state.login_attempts
-                st.error(f"⛔ Kode Salah! Sisa: {attempts_left}")
+        if st.session_state.otp_sent:
+            user_otp = st.text_input("6-Digit Kode:", type="password", max_chars=6)
+            if st.button("🚪 MASUK", use_container_width=True):
+                if user_otp == st.session_state.result_otp:
+                    st.session_state.authenticated = True
+                    st.session_state.login_attempts = 0
+                    st.rerun()
+                else:
+                    st.session_state.login_attempts += 1
+                    left = MAX_LOGIN_ATTEMPTS - st.session_state.login_attempts
+                    st.error(f"❌ Salah! Sisa: {left}")
+
+
+# ============================================
+# DEEPSEEK AI CHATBOT
+# ============================================
+def _deepseek_chat(prompt, market_context):
+    """Send prompt to DeepSeek API with market context."""
+    api_key = Config._get_config('DEEPSEEK_API_KEY', '')
+    if not api_key:
+        return None  # Fallback to rule-based
+
+    try:
+        import openai
+        client = openai.OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+        system_prompt = (
+            "Kamu adalah AI analis trading profesional yang fokus pada ISLM (Islamic Coin) / Haqq Network. "
+            "Jawab dalam Bahasa Indonesia yang ringkas dan jelas. "
+            "Kamu punya akses data market real-time berikut:\n\n"
+            f"{market_context}\n\n"
+            "Gunakan data ini untuk menjawab pertanyaan user. "
+            "Berikan analisa yang akurat, sertakan angka-angka penting. "
+            "Jika ditanya tentang hal di luar trading ISLM, tetap jawab tapi kaitkan dengan konteks investasi/crypto. "
+            "Format jawaban dengan emoji dan markdown yang rapi."
+        )
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=800,
+            temperature=0.7,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[DeepSeek Error] {e}")
+        return None
+
+
+def _build_market_context(price, rsi, macd_val, hist, stoch_k, bb_upper, bb_mid, bb_lower,
+                          ai_signal, whale_ratio, whale_label, market_phase, predictions,
+                          pro_ta, ml_result, supports, resistances, f_score, atr):
+    """Build market context string for DeepSeek."""
+    lines = [
+        f"HARGA: Rp {price:,.0f}",
+        f"SINYAL AI: {ai_signal['label']} (Confidence: {ai_signal['confidence']*100:.0f}%)",
+        f"TREND: {ai_signal['trend']}",
+        f"FASE: {market_phase}",
+        f"RSI: {rsi:.1f} | MACD: {macd_val:.2f} | MACD Hist: {hist:+.2f} | Stoch: {stoch_k:.1f}",
+    ]
+    if bb_upper: lines.append(f"BB: Rp {bb_lower:,.0f} — Rp {bb_upper:,.0f}")
+    if atr: lines.append(f"ATR: {atr:.2f}")
+    lines.append(f"WHALE: {whale_label} ({whale_ratio*100:.0f}% buy)")
+    lines.append(f"FUNDAMENTAL: {f_score}/10")
+
+    if pro_ta:
+        extras = []
+        if pro_ta.get('adx'): extras.append(f"ADX={pro_ta['adx']:.0f}")
+        if pro_ta.get('mfi'): extras.append(f"MFI={pro_ta['mfi']:.0f}")
+        if pro_ta.get('williams_r') is not None: extras.append(f"Williams%R={pro_ta['williams_r']:.0f}")
+        if pro_ta.get('ema_9') and pro_ta.get('ema_21'):
+            extras.append(f"EMA9={'>' if pro_ta['ema_9'] > pro_ta['ema_21'] else '<'}EMA21")
+        if extras: lines.append(f"EXTRA: {' | '.join(extras)}")
+
+    if ml_result and ml_result.get('ml_available'):
+        lines.append(f"ML SIGNAL: {ml_result['ml_signal']} ({ml_result['ml_confidence']*100:.0f}%)")
+
+    if supports: lines.append(f"SUPPORT: {', '.join(f'Rp {s:,.0f}' for s in supports)}")
+    if resistances: lines.append(f"RESISTANCE: {', '.join(f'Rp {r:,.0f}' for r in resistances)}")
+
+    for k, p in predictions.items():
+        lines.append(f"PREDIKSI {p['label']}: Rp {p['target']:,.0f} ({p['change_pct']:+.1f}%) {p['direction']}")
+
+    lines.append("REASONING AI:")
+    for r in ai_signal.get("reasons", []):
+        lines.append(f"  - {r}")
+
+    return "\n".join(lines)
 
 
 # ============================================
@@ -172,428 +268,377 @@ def main_dashboard():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        st.header("🕌 ISLM Monitor V3")
-        st.success("🟢 Connected (Cloud)")
-        if st.button("🔒 LOGOUT"):
+        st.markdown('<h3 style="color:#7ee8c7;">🕌 ISLM Monitor V4</h3>', unsafe_allow_html=True)
+        st.success("🟢 Online")
+        if st.button("🔒 Logout"):
             st.session_state.authenticated = False
             st.session_state.otp_sent = False
+            st.session_state.messages = []
             st.rerun()
-
-        st.subheader("⚙️ Settings")
-        timeframe = st.selectbox("📊 Timeframe", ["1m", "15m", "1H", "1D"])
-
+        timeframe = st.selectbox("📊 Timeframe", ["1m", "15m", "1H", "1D"], index=1)
         st.markdown("---")
-        st.caption("🛡️ **SECURITY STATUS**")
-        st.success("✅ 2FA Active")
-        st.info("🔒 Session Encrypted")
-        st.warning(f"📡 Monitor: {'ON' if 'monitor' in st.session_state else 'OFF'}")
+        st.caption("🛡️ Security: 2FA Active")
 
-    # --- FETCH CORE DATA ---
+    # --- FETCH DATA ---
     try:
         ticker = api.get_price('islmidr')
         if not ticker.get('success'):
-            st.error("⚠️ Gagal ambil data harga. Coba refresh.")
+            st.error("⚠️ API gagal. Refresh halaman.")
             return
         price = ticker['last']
-        high = ticker['high']
-        low = ticker['low']
-        vol = ticker.get('vol', 0)
-        btc = api.get_price('btcidr').get('last', 0)
-    except Exception:
-        st.error("❌ API Error. Coba lagi nanti.")
+        high, low = ticker['high'], ticker['low']
+    except:
+        st.error("❌ Gagal terhubung ke Indodax.")
         return
 
-    # --- FETCH CANDLE DATA ---
     res_map = {'1m': '1', '15m': '15', '1H': '60', '1D': '1D'}
-    res = res_map.get(timeframe, '15')
-    candles = api.get_kline('islmidr', res)
+    candles = api.get_kline('islmidr', res_map.get(timeframe, '15'))
     df = pd.DataFrame(candles)
     df['time'] = pd.to_datetime(df['time'], unit='s')
-
-    # --- COMPUTE ALL INDICATORS (BEFORE using them) ---
     closes = df['close'].values
-    highs_arr = df['high'].values
-    lows_arr = df['low'].values
+    highs_arr, lows_arr = df['high'].values, df['low'].values
 
+    # --- INDICATORS (V4: ProTA + ML) ---
     rsi = QuantAnalyzer.calculate_rsi(closes)
     macd_val, sig_line, hist = QuantAnalyzer.calculate_macd(closes)
-    stoch_k, stoch_d = QuantAnalyzer.calculate_stoch_rsi(closes)
+    stoch_k, _ = QuantAnalyzer.calculate_stoch_rsi(closes)
     bb_upper, bb_mid, bb_lower = QuantAnalyzer.calculate_bollinger_bands(closes)
     atr = QuantAnalyzer.calculate_atr(highs_arr, lows_arr, closes)
     market_phase = QuantAnalyzer.detect_market_phase(closes)
 
-    # Whale & Order Book
+    pro_ta = ProTA.compute_all(df)
+    ml_result = MLSignalClassifier.predict_signal(df)
+    supports, resistances = SupportResistance.find_levels(df)
+
+    # Override with ProTA
+    if pro_ta.get('rsi'): rsi = pro_ta['rsi']
+    if pro_ta.get('macd_hist'): hist = pro_ta['macd_hist']
+    if pro_ta.get('bb_upper'): bb_upper = pro_ta['bb_upper']
+    if pro_ta.get('bb_mid'): bb_mid = pro_ta['bb_mid']
+    if pro_ta.get('bb_lower'): bb_lower = pro_ta['bb_lower']
+
     try:
-        depth = api.get_depth("islmidr")
-        whale_ratio = WhaleTracker.get_whale_ratio(
-            depth.get("buy", []), depth.get("sell", []), 0.1
-        )
-    except Exception:
+        depth = api.get_depth("islmidr") or {}
+        whale_ratio = WhaleTracker.get_whale_ratio(depth.get("buy", []), depth.get("sell", []), 0.1)
+    except:
         whale_ratio = 0.5
     whale_label = WhaleTracker.interpret(whale_ratio)
 
-    # Candle Patterns
     candle_patterns = CandleSniper.analyze_patterns(candles) if candles else []
-    bull_keywords = ("HAMMER", "INV. HAMMER", "BULL ENGULFING", "MORNING STAR")
-    bear_keywords = ("HANGING MAN", "SHOOTING STAR", "BEAR ENGULFING", "EVENING STAR")
-    candle_bull = sum(1 for p in candle_patterns if any(k in p for k in bull_keywords))
-    candle_bear = sum(1 for p in candle_patterns if any(k in p for k in bear_keywords))
-
-    # Fundamental
+    bull_k = ("HAMMER", "INV. HAMMER", "BULL ENGULFING", "MORNING STAR")
+    bear_k = ("HANGING MAN", "SHOOTING STAR", "BEAR ENGULFING", "EVENING STAR")
+    cb = sum(1 for p in candle_patterns if any(k in p for k in bull_k))
+    cbe = sum(1 for p in candle_patterns if any(k in p for k in bear_k))
     f_score, f_news = FundamentalEngine.analyze_market_sentiment()
 
-    # === UNIFIED AI SIGNAL (computed BEFORE display) ===
     ai_signal = AISignalEngine.compute(
         rsi=rsi, macd_hist=hist, price=price,
         bb_mid=bb_mid, bb_upper=bb_upper, bb_lower=bb_lower,
-        candle_bull_count=candle_bull, candle_bear_count=candle_bear,
+        candle_bull_count=cb, candle_bear_count=cbe,
         whale_ratio=whale_ratio, fundamental_score=f_score,
+        pro_ta=pro_ta, ml_result=ml_result,
     )
 
-    # Multi-horizon predictions
     price_list = [c['close'] for c in candles[-100:]] if candles else [price] * 100
     predictions = MarketProjector.predict_multi_horizon(price, price_list)
 
-    # ============================================
-    # TAB LAYOUT
-    # ============================================
-    tab1, tab2, tab3 = st.tabs(["📊 Dashboard Realtime", "💬 Chat Konsultan AI", "📈 Analisa Mendalam"])
+    # --- HEADER ---
+    sig = ai_signal
+    sig_class = "signal-buy" if "BUY" in sig['label'] else "signal-sell" if "SELL" in sig['label'] else "signal-hold"
+    st.markdown(f"""
+    <div class="header-bar">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;">
+            <div>
+                <h1>🕌 ISLM Monitor V4</h1>
+                <p>AI-Powered • ProTA 40+ Indicators • ML GradientBoosting • DeepSeek AI</p>
+            </div>
+            <div style="text-align:right;">
+                <div style="color:#e6edf3;font-size:1.8rem;font-weight:700;">Rp {price:,.0f}</div>
+                <span class="signal-badge {sig_class}">{sig['label']}</span>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # --- TABS ---
+    tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "💬 AI Chat (DeepSeek)", "📈 Analisa"])
 
     # ============================================
     # TAB 1: DASHBOARD
     # ============================================
     with tab1:
-        # Metrics Row
         c1, c2, c3, c4 = st.columns(4)
         range_pct = (price - low) / (high - low + 1e-10) * 100 - 50
-        c1.metric("ISLM/IDR", f"Rp {price:,.0f}", f"{range_pct:.1f}%")
-        c2.metric("Bitcoin (BTC)", f"Rp {btc:,.0f}")
-        c3.metric("Fase Pasar", market_phase)
-        c4.metric("Sinyal AI", ai_signal["label"], f"Confidence: {ai_signal['confidence']*100:.0f}%")
+        c1.metric("ISLM/IDR", f"Rp {price:,.0f}", f"{range_pct:+.1f}%")
+        c2.metric("Fase", market_phase)
+        c3.metric("AI Sinyal", sig['label'], f"{sig['confidence']*100:.0f}%")
+        if ml_result.get('ml_available'):
+            c4.metric("ML Model", ml_result['ml_signal'], f"{ml_result['ml_confidence']*100:.0f}%")
+        else:
+            c4.metric("RSI", f"{rsi:.1f}", "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Netral")
 
-        # --- CHART with Volume ---
-        st.subheader(f"📈 Chart ISLM ({timeframe})")
-
+        # --- PREMIUM CHART ---
         fig = make_subplots(
             rows=2, cols=1, shared_xaxes=True,
-            vertical_spacing=0.03, row_heights=[0.75, 0.25],
-            subplot_titles=None
+            vertical_spacing=0.02, row_heights=[0.78, 0.22],
         )
 
         # Candlestick
         fig.add_trace(go.Candlestick(
             x=df['time'], open=df['open'], high=df['high'],
             low=df['low'], close=df['close'],
-            increasing_line_color='#26a69a', decreasing_line_color='#ef5350',
-            name="ISLM"
+            increasing=dict(line=dict(color='#00d4aa', width=1.2), fillcolor='#00d4aa'),
+            decreasing=dict(line=dict(color='#ff4757', width=1.2), fillcolor='#ff4757'),
+            name="ISLM", whiskerwidth=0.8,
         ), row=1, col=1)
 
-        # Bollinger Bands overlay
-        if bb_upper is not None:
-            n = len(df)
-            if n >= 20:
-                bb_times = df['time'].iloc[-20:]
-                bb_u_vals = [bb_upper] * 20
-                bb_l_vals = [bb_lower] * 20
+        # EMA 9 & 21 overlay
+        if pro_ta.get('ema_9') and len(df) >= 21:
+            try:
+                import ta as ta_lib
+                ema9 = ta_lib.trend.ema_indicator(df['close'], window=9)
+                ema21 = ta_lib.trend.ema_indicator(df['close'], window=21)
                 fig.add_trace(go.Scatter(
-                    x=bb_times, y=bb_u_vals,
-                    line=dict(color='rgba(88,166,255,0.3)', width=1, dash='dot'),
-                    name="BB Upper", showlegend=False
+                    x=df['time'], y=ema9,
+                    line=dict(color='#ffa502', width=1.2), name="EMA 9", opacity=0.8,
                 ), row=1, col=1)
                 fig.add_trace(go.Scatter(
-                    x=bb_times, y=bb_l_vals,
-                    line=dict(color='rgba(88,166,255,0.3)', width=1, dash='dot'),
-                    fill='tonexty', fillcolor='rgba(88,166,255,0.05)',
-                    name="BB Lower", showlegend=False
+                    x=df['time'], y=ema21,
+                    line=dict(color='#3742fa', width=1.2), name="EMA 21", opacity=0.8,
                 ), row=1, col=1)
+            except:
+                pass
 
-        # Volume bars
-        colors = ['#26a69a' if row['close'] >= row['open'] else '#ef5350' for _, row in df.iterrows()]
+        # Bollinger Bands
+        if bb_upper is not None and len(df) >= 20:
+            try:
+                import ta as ta_lib
+                bb = ta_lib.volatility.BollingerBands(df['close'], window=20)
+                fig.add_trace(go.Scatter(
+                    x=df['time'], y=bb.bollinger_hband(),
+                    line=dict(color='rgba(126,232,199,0.25)', width=1, dash='dot'),
+                    name="BB Upper", showlegend=False,
+                ), row=1, col=1)
+                fig.add_trace(go.Scatter(
+                    x=df['time'], y=bb.bollinger_lband(),
+                    line=dict(color='rgba(126,232,199,0.25)', width=1, dash='dot'),
+                    fill='tonexty', fillcolor='rgba(126,232,199,0.04)',
+                    name="BB Lower", showlegend=False,
+                ), row=1, col=1)
+            except:
+                pass
+
+        # Support/Resistance lines
+        for s in supports:
+            fig.add_hline(y=s, line_dash="dash", line_color="rgba(0,212,170,0.4)",
+                          annotation_text=f"S: {s:,.0f}", row=1, col=1)
+        for r in resistances:
+            fig.add_hline(y=r, line_dash="dash", line_color="rgba(255,71,87,0.4)",
+                          annotation_text=f"R: {r:,.0f}", row=1, col=1)
+
+        # Volume
+        colors = ['#00d4aa' if row['close'] >= row['open'] else '#ff4757' for _, row in df.iterrows()]
         fig.add_trace(go.Bar(
             x=df['time'], y=df['vol'], marker_color=colors,
-            name="Volume", showlegend=False
+            marker_opacity=0.6, name="Volume", showlegend=False,
         ), row=2, col=1)
 
         fig.update_layout(
-            template="plotly_dark",
-            height=550,
-            plot_bgcolor="#0e1117", paper_bgcolor="#0e1117",
-            margin=dict(l=0, r=0, t=10, b=0),
+            template="plotly_dark", height=520,
+            plot_bgcolor="#0a0e17", paper_bgcolor="#0a0e17",
+            margin=dict(l=0, r=0, t=0, b=0),
             xaxis_rangeslider_visible=False,
-            showlegend=False,
+            legend=dict(orientation="h", yanchor="top", y=1.02, xanchor="left", x=0,
+                        font=dict(size=10, color="#8b949e"), bgcolor="rgba(0,0,0,0)"),
+            xaxis2=dict(showgrid=False),
+            yaxis=dict(gridcolor="rgba(48,54,61,0.4)", title=None),
+            yaxis2=dict(gridcolor="rgba(48,54,61,0.2)", title=None),
         )
-        fig.update_yaxes(title_text="Harga (Rp)", row=1, col=1)
-        fig.update_yaxes(title_text="Vol", row=2, col=1)
-        st.plotly_chart(fig, use_container_width=True)
-
-        # --- AI REASONING BOX ---
-        st.subheader("🧠 AI Reasoning (Explainable)")
-        for reason in ai_signal.get("reasons", []):
-            st.markdown(f'<div class="reason-box">{reason}</div>', unsafe_allow_html=True)
+        st.plotly_chart(fig, use_container_width=True, key="main_chart")
 
         # --- PREDICTIONS ---
-        st.subheader("🔮 AI Multi-Horizon Prediction")
+        st.markdown("#### 🔮 Prediksi AI")
         pc1, pc2, pc3 = st.columns(3)
-        for col, (key, pred) in zip([pc1, pc2, pc3], predictions.items()):
-            with col:
-                col.metric(
-                    f"Target {pred['label']}",
-                    f"Rp {pred['target']:,.0f}",
-                    f"{pred['change_pct']:+.1f}% {pred['direction']}"
-                )
-                col.caption(f"Range: Rp {pred['low']:,.0f} — Rp {pred['high']:,.0f} | Conf: {pred['confidence']:.0f}%")
+        for col, (k, p) in zip([pc1, pc2, pc3], predictions.items()):
+            col.metric(p['label'], f"Rp {p['target']:,.0f}", f"{p['change_pct']:+.1f}% {p['direction']}")
+            col.caption(f"Range: Rp {p['low']:,.0f} — Rp {p['high']:,.0f}")
 
-        # News Ticker
-        st.info(f"📰 **NEWS:** {f_news}")
+        # --- REASONING ---
+        with st.expander("🧠 AI Reasoning", expanded=False):
+            for r in sig.get("reasons", []):
+                st.markdown(f'<div class="reason-box">{r}</div>', unsafe_allow_html=True)
 
     # ============================================
-    # TAB 2: AI CHATBOT
+    # TAB 2: DEEPSEEK AI CHATBOT
     # ============================================
     with tab2:
-        st.subheader("🤖 Konsultan AI ISLM (Context-Aware)")
-        st.caption("AI ini menganalisa data REAL-TIME dan memberikan jawaban berdasarkan data terbaru.")
+        st.markdown("#### 💬 Tanya AI tentang ISLM")
+        st.caption("Powered by DeepSeek AI — jawab kontekstual dengan data real-time")
 
-        # Quick Reply Buttons
-        st.write("**⚡ Quick Actions:**")
-        qr1, qr2, qr3, qr4, qr5, qr6 = st.columns(6)
-
-        quick_prompt = None
-        if qr1.button("📈 Naik/Turun?"): quick_prompt = "Apakah ISLM akan naik atau turun?"
-        if qr2.button("📊 Analisa 1H"): quick_prompt = "Berikan analisa teknikal lengkap"
-        if qr3.button("📅 Prediksi 7H"): quick_prompt = "Prediksi harga 7 hari kedepan"
-        if qr4.button("📰 Berita"): quick_prompt = "Berita terbaru tentang ISLM"
-        if qr5.button("🐋 Whale"): quick_prompt = "Bagaimana aktivitas whale saat ini?"
-        if qr6.button("🔐 Security"): quick_prompt = "Status keamanan sistem"
+        # Quick buttons
+        qr1, qr2, qr3, qr4 = st.columns(4)
+        quick = None
+        if qr1.button("📈 Naik/Turun?"): quick = "Apakah ISLM akan naik atau turun? Berikan analisa lengkap."
+        if qr2.button("🔮 Prediksi"): quick = "Berikan prediksi harga ISLM 1,3,7 hari dengan reasoning."
+        if qr3.button("📊 Analisa"): quick = "Analisa teknikal ISLM secara mendalam."
+        if qr4.button("🐋 Whale"): quick = "Bagaimana aktivitas whale ISLM saat ini?"
 
         st.markdown("---")
 
-        # Chat History
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
+        # Chat history
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        # Process input (either quick button or typed)
-        prompt = quick_prompt or st.chat_input("Tanya AI tentang ISLM...")
+        prompt = quick or st.chat_input("Tanya AI tentang ISLM trading...")
 
         if prompt:
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-            # --- SMART AI RESPONSE ENGINE ---
-            response = _generate_ai_response(
-                prompt, price, rsi, macd_val, hist, sig_line,
-                stoch_k, bb_upper, bb_mid, bb_lower,
-                ai_signal, whale_ratio, whale_label,
-                candle_patterns, f_score, f_news,
-                market_phase, predictions, candles, atr
+            # Build market context
+            context = _build_market_context(
+                price, rsi, macd_val, hist, stoch_k, bb_upper, bb_mid, bb_lower,
+                ai_signal, whale_ratio, whale_label, market_phase, predictions,
+                pro_ta, ml_result, supports, resistances, f_score, atr
             )
 
+            # Try DeepSeek first, fallback to rule-based
             with st.chat_message("assistant"):
-                st.markdown(response)
+                with st.spinner("🤖 AI sedang menganalisa..."):
+                    response = _deepseek_chat(prompt, context)
+                    if response is None:
+                        response = _fallback_response(
+                            prompt, price, rsi, macd_val, hist, stoch_k,
+                            bb_upper, bb_mid, bb_lower, ai_signal, whale_ratio,
+                            whale_label, market_phase, predictions, candle_patterns,
+                            f_score, f_news, atr, pro_ta, ml_result, supports, resistances
+                        )
+                    st.markdown(response)
             st.session_state.messages.append({"role": "assistant", "content": response})
 
     # ============================================
     # TAB 3: ADVANCED ANALYSIS
     # ============================================
     with tab3:
-        st.subheader("📊 Advanced Market Analysis")
+        st.markdown("#### 📊 Indikator Teknikal V4")
 
-        # Gauge Metrics
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("RSI (14)", f"{rsi:.1f}", "Bullish" if rsi > 50 else "Bearish")
-        m2.metric("MACD", f"{macd_val:.2f}", f"Hist: {hist:.2f}")
-        m3.metric("Stochastic", f"{stoch_k:.1f}",
-                  "Overbought" if stoch_k > 80 else "Oversold" if stoch_k < 20 else "Neutral")
-        m4.metric("ATR", f"{atr:.2f}" if atr else "N/A", "Volatilitas")
+        m1.metric("RSI", f"{rsi:.1f}", "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Netral")
+        m2.metric("MACD", f"{macd_val:.2f}", f"Hist: {hist:+.2f}")
+        m3.metric("Stochastic", f"{stoch_k:.1f}")
+        m4.metric("ATR", f"{atr:.2f}" if atr else "N/A")
 
+        # ProTA extras
+        if pro_ta:
+            st.markdown("---")
+            st.markdown("#### 💪 ProTA (40+ Indicators)")
+            p1, p2, p3, p4 = st.columns(4)
+            if pro_ta.get('adx'):
+                p1.metric("ADX", f"{pro_ta['adx']:.0f}", "Trend Kuat" if pro_ta['adx'] > 25 else "Sideways")
+            if pro_ta.get('mfi'):
+                p2.metric("MFI", f"{pro_ta['mfi']:.0f}")
+            if pro_ta.get('williams_r') is not None:
+                p3.metric("Williams %R", f"{pro_ta['williams_r']:.0f}")
+            if pro_ta.get('roc') is not None:
+                p4.metric("ROC", f"{pro_ta['roc']:.2f}")
+
+            if pro_ta.get('ema_9') and pro_ta.get('ema_21'):
+                cross = "✨ Golden Cross" if pro_ta['ema_9'] > pro_ta['ema_21'] else "💀 Death Cross"
+                st.info(f"📊 EMA Cross: {cross} (EMA9={pro_ta['ema_9']:,.0f} vs EMA21={pro_ta['ema_21']:,.0f})")
+
+        # ML Signal
+        if ml_result.get('ml_available'):
+            st.markdown("---")
+            st.markdown("#### 🤖 ML Signal Classifier")
+            st.metric("ML Prediction", ml_result['ml_signal'], f"{ml_result['ml_confidence']*100:.0f}% confidence")
+            if ml_result.get('ml_class_probs'):
+                for cls, prob in ml_result['ml_class_probs'].items():
+                    bar = "█" * int(prob * 30) + "░" * (30 - int(prob * 30))
+                    st.text(f"  {cls}: {bar} {prob*100:.0f}%")
+
+        # Support / Resistance
         st.markdown("---")
-
-        # Whale Tracker
-        col_w, col_c = st.columns(2)
-        with col_w:
-            st.write("### 🐋 Whale Tracker")
-            st.metric("Rasio Order Besar", f"{whale_ratio*100:.0f}% Buy", whale_label)
-
-        with col_c:
-            st.write("### 🕯️ Candle Pattern Sniper")
-            if candle_patterns:
-                st.write("Pola terdeteksi: " + ", ".join(candle_patterns))
+        st.markdown("#### 📐 Support & Resistance")
+        sr1, sr2 = st.columns(2)
+        with sr1:
+            if supports:
+                for s in supports:
+                    st.success(f"🟢 Support: Rp {s:,.0f}")
             else:
-                st.caption("Tidak ada pola reversal/continuation terdeteksi.")
+                st.caption("Belum cukup data")
+        with sr2:
+            if resistances:
+                for r in resistances:
+                    st.error(f"🔴 Resistance: Rp {r:,.0f}")
+            else:
+                st.caption("Belum cukup data")
 
+        # Whale
         st.markdown("---")
-
-        # Technical Indicators
-        st.write("### 📐 Technical Indicators")
-        if bb_upper is not None:
-            ti1, ti2, ti3 = st.columns(3)
-            ti1.metric("Bollinger Upper", f"Rp {bb_upper:,.0f}")
-            ti2.metric("Bollinger Mid (SMA20)", f"Rp {bb_mid:,.0f}")
-            ti3.metric("Bollinger Lower", f"Rp {bb_lower:,.0f}")
+        wc1, wc2 = st.columns(2)
+        wc1.metric("🐋 Whale", f"{whale_ratio*100:.0f}% Buy", whale_label)
+        if candle_patterns:
+            wc2.info(f"🕯️ Pola: {', '.join(candle_patterns)}")
         else:
-            st.warning("⚠️ Data tidak cukup untuk Bollinger Bands (butuh 20+ candle).")
+            wc2.caption("🕯️ Tidak ada pola terdeteksi")
 
-        # Fibonacci
-        st.write("### 📏 Fibonacci Levels")
-        fib = QuantAnalyzer.calculate_fibonacci(high, low)
-        fib_cols = st.columns(len(fib))
-        for col, (level, val) in zip(fib_cols, fib.items()):
-            col.metric(f"Fib {level}", f"Rp {val:,.0f}")
+        # Reasoning
+        st.markdown("---")
+        st.markdown("#### 🧠 AI Signal Breakdown")
+        for r in sig.get("reasons", []):
+            st.markdown(f'<div class="reason-box">{r}</div>', unsafe_allow_html=True)
 
         st.markdown("---")
-
-        # AI Reasoning (repeated for convenience)
-        st.write("### 🧠 AI Signal Breakdown")
-        for reason in ai_signal.get("reasons", []):
-            st.markdown(f'<div class="reason-box">{reason}</div>', unsafe_allow_html=True)
-
-        # Send to Telegram
-        st.markdown("---")
-        if st.button("🚨 KIRIM ANALISA KE TELEGRAM"):
+        if st.button("📡 Kirim Analisa ke Telegram", use_container_width=True):
             bot = TelegramBot()
             summary = AISignalEngine.generate_ai_summary(ai_signal, price, predictions)
-            success = bot.send_message(summary)
-            if success:
-                st.success("✅ Analisa AI terkirim ke Telegram!")
+            if bot.send_message(summary):
+                st.success("✅ Terkirim!")
             else:
-                st.error("❌ Gagal kirim. Cek Chat ID.")
+                st.error("❌ Gagal. Cek Chat ID.")
 
 
 # ============================================
-# SMART AI RESPONSE ENGINE
+# FALLBACK RESPONSE (when DeepSeek unavailable)
 # ============================================
-def _generate_ai_response(
-    prompt, price, rsi, macd_val, hist, sig_line,
-    stoch_k, bb_upper, bb_mid, bb_lower,
-    ai_signal, whale_ratio, whale_label,
-    candle_patterns, f_score, f_news,
-    market_phase, predictions, candles, atr
-):
-    """Context-aware AI chatbot response generator."""
+def _fallback_response(prompt, price, rsi, macd_val, hist, stoch_k,
+                       bb_upper, bb_mid, bb_lower, ai_signal, whale_ratio,
+                       whale_label, market_phase, predictions, candle_patterns,
+                       f_score, f_news, atr, pro_ta, ml_result, supports, resistances):
     p = prompt.lower()
+    sig = ai_signal
+    ml = ml_result
 
-    # --- Price / Status ---
     if any(k in p for k in ["harga", "price", "status", "berapa"]):
-        bb_info = f"BB: Rp {bb_lower:,.0f} — Rp {bb_upper:,.0f}" if bb_upper else "BB: N/A"
-        return (
-            f"💰 **Harga ISLM Sekarang: Rp {price:,.0f}**\n\n"
-            f"📊 RSI: {rsi:.1f} ({'Overbought ⚠️' if rsi > 70 else 'Oversold 🟢' if rsi < 30 else 'Netral'})\n"
-            f"📈 MACD: {macd_val:.2f} (Hist: {hist:+.2f})\n"
-            f"📐 {bb_info}\n"
-            f"🏷️ Fase Pasar: {market_phase}\n"
-            f"📢 **Sinyal AI: {ai_signal['label']}** (Confidence: {ai_signal['confidence']*100:.0f}%)\n"
-            f"📈 Trend: {ai_signal['trend']}"
-        )
+        bb = f"BB: Rp {bb_lower:,.0f} — Rp {bb_upper:,.0f}" if bb_upper else "BB: N/A"
+        r = f"💰 **ISLM: Rp {price:,.0f}**\n\n📢 {sig['label']} ({sig['confidence']*100:.0f}%)\n📈 {sig['trend']}\n📊 RSI: {rsi:.1f} | MACD: {hist:+.2f}\n📐 {bb}\n🐋 {whale_label}"
+        if ml.get('ml_available'): r += f"\n🤖 ML: {ml['ml_signal']}"
+        return r
 
-    # --- Prediction / Forecast ---
-    if any(k in p for k in ["prediksi", "predict", "ramal", "naik", "turun", "forecast", "target"]):
-        lines = [f"🔮 **PREDIKSI AI ISLM** (Dari harga Rp {price:,.0f})\n"]
-        for key, pred in predictions.items():
-            lines.append(
-                f"**{pred['label']}:** Rp {pred['target']:,.0f} "
-                f"({pred['change_pct']:+.1f}%) {pred['direction']}\n"
-                f"  _Range: Rp {pred['low']:,.0f} — Rp {pred['high']:,.0f} | "
-                f"Confidence: {pred['confidence']:.0f}%_\n"
-            )
-        lines.append(f"\n📢 **Sinyal Sekarang: {ai_signal['label']}**")
-        lines.append(f"📈 Trend: {ai_signal['trend']}")
-
-        # Add reasoning
-        lines.append(f"\n**Alasan AI:**")
-        for r in ai_signal.get("reasons", [])[:3]:
-            lines.append(f"• {r}")
+    if any(k in p for k in ["prediksi", "predict", "naik", "turun", "forecast"]):
+        lines = [f"🔮 **PREDIKSI ISLM** (Rp {price:,.0f})\n"]
+        for k, pred in predictions.items():
+            lines.append(f"**{pred['label']}:** Rp {pred['target']:,.0f} ({pred['change_pct']:+.1f}%) {pred['direction']}")
+        if supports: lines.append(f"\n🟢 Support: {', '.join(f'Rp {s:,.0f}' for s in supports)}")
+        if resistances: lines.append(f"🔴 Resistance: {', '.join(f'Rp {r:,.0f}' for r in resistances)}")
         return "\n".join(lines)
 
-    # --- Technical Analysis ---
-    if any(k in p for k in ["analisa", "teknikal", "technical", "indikator"]):
-        bb_info = (
-            f"📐 Bollinger Bands:\n"
-            f"  Upper: Rp {bb_upper:,.0f} | Mid: Rp {bb_mid:,.0f} | Lower: Rp {bb_lower:,.0f}\n"
-        ) if bb_upper else "📐 Bollinger: Data tidak cukup\n"
-        return (
-            f"📊 **ANALISA TEKNIKAL ISLM**\n\n"
-            f"📈 RSI (14): {rsi:.1f}\n"
-            f"📉 MACD: {macd_val:.2f} | Signal: {sig_line:.2f} | Histogram: {hist:+.2f}\n"
-            f"📊 Stochastic: {stoch_k:.1f}\n"
-            f"📏 ATR: {atr:.2f}\n" if atr else ""
-            f"{bb_info}"
-            f"🏷️ Fase Pasar: {market_phase}\n\n"
-            f"**Kesimpulan AI:** {ai_signal['label']} ({ai_signal['confidence']*100:.0f}% confidence)\n"
-            f"**Reasoning:**\n" + "\n".join(f"• {r}" for r in ai_signal.get("reasons", []))
-        )
-
-    # --- News ---
-    if any(k in p for k in ["berita", "news", "kabar"]):
-        return (
-            f"📰 **BERITA & SENTIMEN TERBARU:**\n\n"
-            f"{f_news}\n\n"
-            f"📊 Skor Fundamental: {f_score}/10\n"
-            f"🏷️ Fase Pasar: {market_phase}\n"
-            f"📢 Sinyal AI: {ai_signal['label']}"
-        )
-
-    # --- Whale ---
-    if any(k in p for k in ["whale", "paus", "order book", "orderbook"]):
-        return (
-            f"🐋 **WHALE TRACKER ISLM:**\n\n"
-            f"📊 Rasio Whale Buy: {whale_ratio*100:.0f}%\n"
-            f"📢 Interpretasi: {whale_label}\n\n"
-            f"{'⚠️ PERHATIAN: Whale sedang Distribusi (Jual). Waspada tekanan turun.' if whale_ratio < 0.4 else ''}"
-            f"{'🟢 Whale sedang Akumulasi (Beli). Sinyal positif!' if whale_ratio > 0.6 else ''}"
-            f"{'⚖️ Whale seimbang. Tidak ada tekanan dominan.' if 0.4 <= whale_ratio <= 0.6 else ''}"
-        )
-
-    # --- Signal ---
-    if any(k in p for k in ["sinyal", "signal", "beli", "jual", "buy", "sell"]):
-        lines = [f"📢 **SINYAL AI ISLM: {ai_signal['label']}**\n"]
-        lines.append(f"🎯 Confidence: {ai_signal['confidence']*100:.0f}%")
-        lines.append(f"📈 Trend: {ai_signal['trend']}\n")
-        lines.append("**Alasan:**")
-        for r in ai_signal.get("reasons", []):
-            lines.append(f"• {r}")
-        if candle_patterns:
-            lines.append(f"\n🕯️ Pola Candle: {', '.join(candle_patterns)}")
+    if any(k in p for k in ["analisa", "teknikal", "technical"]):
+        lines = [f"📊 **ANALISA ISLM V4**\n", f"RSI: {rsi:.1f} | MACD: {hist:+.2f} | Stoch: {stoch_k:.1f}"]
+        if pro_ta.get('adx'): lines.append(f"ADX: {pro_ta['adx']:.0f} | MFI: {pro_ta.get('mfi', 0):.0f}")
+        lines.append(f"\n📢 {sig['label']} | 🏷️ {market_phase}")
         return "\n".join(lines)
 
-    # --- Security ---
-    if any(k in p for k in ["security", "keamanan", "aman"]):
-        return (
-            f"🛡️ **STATUS KEAMANAN SISTEM:**\n\n"
-            f"✅ 2FA Telegram: **Aktif**\n"
-            f"🔒 Session Encryption: **Aktif**\n"
-            f"📡 Background Monitor: **{'Aktif' if 'monitor' in st.session_state else 'Nonaktif'}**\n"
-            f"⏱️ Session Timeout: **15 menit**\n"
-            f"🚫 Max Login Attempts: **3x**\n"
-            f"🔑 API Keys: **Tersimpan di Environment Variables**"
-        )
+    if any(k in p for k in ["whale", "paus"]): return f"🐋 Whale: {whale_ratio*100:.0f}% Buy\n{whale_label}"
+    if any(k in p for k in ["berita", "news"]): return f"📰 {f_news}\nSkor: {f_score}/10"
+    if any(k in p for k in ["sinyal", "signal"]): return f"📢 {sig['label']} ({sig['confidence']*100:.0f}%)\n{''.join(f'• {r}' + chr(10) for r in sig.get('reasons', []))}"
 
-    # --- Candle Pattern ---
-    if any(k in p for k in ["pola", "pattern", "candle"]):
-        if candle_patterns:
-            return f"🕯️ **Pola Candlestick Terdeteksi:**\n\n" + "\n".join(f"• {p}" for p in candle_patterns)
-        return "🕯️ Tidak ada pola candlestick signifikan terdeteksi saat ini."
-
-    # --- Default ---
-    return (
-        f"🤖 Hai Bos! Saya AI Konsultan ISLM.\n\n"
-        f"**Saya bisa jawab tentang:**\n"
-        f"• 💰 Harga & Status → _\"Berapa harga ISLM?\"_\n"
-        f"• 🔮 Prediksi → _\"Prediksi 7 hari\"_\n"
-        f"• 📊 Analisa Teknikal → _\"Analisa teknikal\"_\n"
-        f"• 📢 Sinyal → _\"Sinyal beli/jual\"_\n"
-        f"• 🐋 Whale → _\"Aktivitas whale\"_\n"
-        f"• 📰 Berita → _\"Berita terbaru\"_\n"
-        f"• 🕯️ Candle → _\"Pola candle\"_\n"
-        f"• 🔐 Keamanan → _\"Status keamanan\"_\n\n"
-        f"Atau gunakan tombol Quick Action di atas! ⚡"
-    )
+    return f"🤖 ISLM: Rp {price:,.0f} | {sig['label']} | {sig['trend']}\n\nKetik: harga, prediksi, analisa, whale, sinyal, berita"
 
 
-# --- APP ROUTER ---
+# --- ROUTER ---
 if not st.session_state.authenticated:
     login_page()
 else:

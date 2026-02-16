@@ -40,3 +40,11 @@ class Config:
     # Telegram Bot
     TELEGRAM_TOKEN = _get('TELEGRAM_TOKEN')
     TELEGRAM_CHAT_ID = _get('TELEGRAM_CHAT_ID')
+
+    # DeepSeek AI
+    DEEPSEEK_API_KEY = _get('DEEPSEEK_API_KEY')
+
+    @staticmethod
+    def _get_config(key, default=''):
+        return _get(key, default)
+
