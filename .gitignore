@@ -12,6 +12,7 @@ venv/
 # Session & Runtime Data
 *.json
 !requirements.json
+!railway.json
 lockdown.flag
 *.flag
 
