@@ -11,6 +11,7 @@ Multi-layer security system with real-time monitoring:
 
 import time
 import hashlib
+import hmac
 import json
 import os
 from datetime import datetime
@@ -355,7 +356,6 @@ class SecurityEngine:
     # ============================================
     def sign_request(self, data, secret):
         """Sign request data for integrity check."""
-        import hmac
         payload = json.dumps(data, sort_keys=True)
         return hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
