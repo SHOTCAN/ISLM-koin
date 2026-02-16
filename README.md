@@ -1,4 +1,4 @@
-# islm-coin
+# belajar
 
 Latihan project Python sederhana. Catatan pribadi, tidak untuk publik.
 
