@@ -265,3 +265,105 @@ class SecurityEngine:
             for e in s['recent_threats'][-3:]:
                 lines.append(f"  • [{e['severity']}] {e['type']}: {e['detail'][:50]}")
         return "\n".join(lines)
+
+    # ============================================
+    # CSRF TOKEN PROTECTION
+    # ============================================
+    def generate_csrf_token(self):
+        """Generate a CSRF token for form protection."""
+        import secrets
+        token = secrets.token_hex(32)
+        self._csrf_tokens = getattr(self, '_csrf_tokens', {})
+        self._csrf_tokens[token] = time.time()
+        # Clean old tokens (>30min)
+        self._csrf_tokens = {
+            t: ts for t, ts in self._csrf_tokens.items()
+            if time.time() - ts < 1800
+        }
+        return token
+
+    def validate_csrf_token(self, token):
+        """Validate CSRF token."""
+        tokens = getattr(self, '_csrf_tokens', {})
+        if token in tokens:
+            if time.time() - tokens[token] < 1800:
+                del tokens[token]
+                return True
+            del tokens[token]
+        self._log_event("CSRF", "Invalid or expired CSRF token", "HIGH")
+        return False
+
+    # ============================================
+    # HONEYPOT TRAP (catches automated bots)
+    # ============================================
+    def check_honeypot(self, honeypot_value, identifier="unknown"):
+        """If honeypot field has content, it's a bot."""
+        if honeypot_value:
+            self._log_event("HONEYPOT", f"Bot trapped: {identifier}", "CRITICAL")
+            self._send_alert(
+                f"🍯 *HONEYPOT BOT TERDETEKSI*\n\n"
+                f"Source: `{identifier}`\n"
+                f"Isi honeypot: `{str(honeypot_value)[:30]}`\n"
+                f"Aksi: Banned otomatis"
+            )
+            return True  # It's a bot
+        return False  # Legit user
+
+    # ============================================
+    # OTP RATE LIMITER
+    # ============================================
+    def check_otp_rate(self, identifier, cooldown=60):
+        """Prevent OTP spam. Returns (allowed, wait_seconds)."""
+        self._otp_log = getattr(self, '_otp_log', defaultdict(list))
+        now = time.time()
+        # Clean old entries
+        self._otp_log[identifier] = [
+            t for t in self._otp_log[identifier] if now - t < 300
+        ]
+        # Max 5 OTP requests per 5 minutes
+        if len(self._otp_log[identifier]) >= 5:
+            self._log_event("OTP_SPAM", f"OTP spam from {identifier}: {len(self._otp_log[identifier])} in 5min", "HIGH")
+            self._send_alert(
+                f"⚠️ *OTP SPAM TERDETEKSI*\n\n"
+                f"Source: `{identifier}`\n"
+                f"OTP requests: {len(self._otp_log[identifier])} dalam 5 menit"
+            )
+            return False, 300
+        # Cooldown between OTP
+        if self._otp_log[identifier]:
+            last = self._otp_log[identifier][-1]
+            if now - last < cooldown:
+                return False, int(cooldown - (now - last))
+        self._otp_log[identifier].append(now)
+        return True, 0
+
+    # ============================================
+    # API KEY ROTATION TRACKER
+    # ============================================
+    def check_key_age(self, key_name, created_date=None):
+        """Warn if API key is too old (>90 days)."""
+        if not created_date:
+            return None
+        age_days = (datetime.now() - created_date).days
+        if age_days > 90:
+            self._log_event("KEY_AGE", f"{key_name} is {age_days} days old", "MEDIUM")
+            return f"⚠️ {key_name} sudah {age_days} hari — Pertimbangkan rotate!"
+        return None
+
+    # ============================================
+    # REQUEST SIGNATURE (anti-tampering)
+    # ============================================
+    def sign_request(self, data, secret):
+        """Sign request data for integrity check."""
+        import hmac
+        payload = json.dumps(data, sort_keys=True)
+        return hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+    def verify_request(self, data, signature, secret):
+        """Verify request signature."""
+        expected = self.sign_request(data, secret)
+        if not hmac.compare_digest(expected, signature):
+            self._log_event("TAMPER", "Request signature mismatch", "CRITICAL")
+            return False
+        return True
+

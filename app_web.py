@@ -9,16 +9,27 @@ from backend.core_logic import (
     MarketProjector, FundamentalEngine, QuantAnalyzer,
     CandleSniper, WhaleTracker, AISignalEngine,
     ProTA, MLSignalClassifier, SupportResistance, NewsEngine,
+    BTCCorrelation, RiskMetrics, TrendStrengthIndex,
 )
 from backend.auth_engine import AuthEngine
 from backend.telegram_bot import TelegramBot
 from backend.config import Config
+from backend.security_engine import SecurityEngine
 import threading
+import hashlib
+
+# Global security engine (singleton)
+@st.cache_resource
+def get_security_engine():
+    return SecurityEngine(
+        telegram_token=Config.TELEGRAM_TOKEN,
+        chat_id=Config.TELEGRAM_CHAT_ID
+    )
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="ISLM Monitor V4",
-    page_icon="🕌",
+    page_title="ISLM Monitor V5",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -99,11 +110,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- SECURITY ---
+# --- SECURITY V5 ---
 MAX_LOGIN_ATTEMPTS = 3
 SESSION_TIMEOUT = 15 * 60
 OTP_COOLDOWN = 60
-LOCKOUT_TIME = 300  # 5 min lockout
+LOCKOUT_STAGES = [300, 1800, 3600]  # Progressive: 5min, 30min, 1hr
+sec = get_security_engine()
 
 # --- SESSION STATE ---
 defaults = {
@@ -133,30 +145,47 @@ def login_page():
     <div style="display:flex;justify-content:center;align-items:center;min-height:60vh;">
     <div style="background:linear-gradient(145deg,#161b22,#1c2333);padding:40px;border-radius:16px;
     border:1px solid #30363d;max-width:420px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
-    <h2 style="color:#7ee8c7;text-align:center;margin:0 0 4px 0;">🔐 ISLM Monitor</h2>
+    <h2 style="color:#7ee8c7;text-align:center;margin:0 0 4px 0;">🛡️ ISLM Monitor V5</h2>
     <p style="color:#8b949e;text-align:center;font-size:0.8rem;margin-bottom:24px;">
-    Akses terbatas — Autentikasi 2FA via Telegram</p>
+    Akses terbatas — Autentikasi 2FA + AI Security</p>
     </div></div>
     """, unsafe_allow_html=True)
 
-    # Lockout check
+    # Session fingerprint for security tracking
+    session_fp = hashlib.md5(str(id(st.session_state)).encode()).hexdigest()[:12]
+
+    # Progressive lockout check via SecurityEngine
+    locked, remaining = sec.check_lockout(session_fp)
+    if locked:
+        st.error(f"⛔ Terkunci. Tunggu {remaining} detik. (Progressive Security)")
+        return
+
+    # Rate limit check
+    allowed, rem = sec.check_rate_limit(session_fp)
+    if not allowed:
+        st.error("⛔ Terlalu banyak request. Coba lagi nanti.")
+        return
+
+    # Legacy lockout fallback
     if time.time() < st.session_state.lockout_until:
         remaining = int(st.session_state.lockout_until - time.time())
         st.error(f"⛔ Terkunci. Tunggu {remaining} detik.")
         return
 
     if st.session_state.login_attempts >= MAX_LOGIN_ATTEMPTS:
-        st.session_state.lockout_until = time.time() + LOCKOUT_TIME
+        lockout = sec.record_failed_attempt(session_fp)
+        st.session_state.lockout_until = time.time() + (lockout if lockout else 300)
         st.session_state.login_attempts = 0
-        st.error("⛔ Terlalu banyak percobaan. Terkunci 5 menit.")
+        st.error(f"⛔ Terlalu banyak percobaan. Terkunci {lockout // 60 if lockout else 5} menit.")
         return
 
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         if st.button("📡 KIRIM KODE OTP KE TELEGRAM", use_container_width=True):
-            elapsed = time.time() - st.session_state.last_otp_time
-            if elapsed < OTP_COOLDOWN:
-                st.warning(f"⏳ Tunggu {int(OTP_COOLDOWN - elapsed)}s")
+            # OTP rate limit via SecurityEngine
+            otp_ok, otp_wait = sec.check_otp_rate(session_fp)
+            if not otp_ok:
+                st.warning(f"⏳ Tunggu {otp_wait}s (anti-spam)")
             else:
                 auth = AuthEngine()
                 otp = auth.generate_otp()
@@ -171,13 +200,15 @@ def login_page():
 
         if st.session_state.otp_sent:
             user_otp = st.text_input("6-Digit Kode:", type="password", max_chars=6)
-            if st.button("🚪 MASUK", use_container_width=True):
+            if st.button("🛡️ MASUK (Secured)", use_container_width=True):
                 if user_otp == st.session_state.result_otp:
                     st.session_state.authenticated = True
                     st.session_state.login_attempts = 0
+                    sec.record_success(session_fp)
                     st.rerun()
                 else:
                     st.session_state.login_attempts += 1
+                    sec.record_failed_attempt(session_fp)
                     left = MAX_LOGIN_ATTEMPTS - st.session_state.login_attempts
                     st.error(f"❌ Salah! Sisa: {left}")
 
