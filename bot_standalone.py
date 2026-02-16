@@ -14,11 +14,24 @@ AI Engine V4: ProTA + ML + Support/Resistance
 
 import sys
 import os
+
+# Fix Windows console encoding BEFORE any emoji prints
+os.environ['PYTHONIOENCODING'] = 'utf-8'
+
 import time
 import traceback
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
+
+
+def safe_print(*args, **kwargs):
+    """Print that won't crash on Windows with emoji."""
+    try:
+        print(*args, **kwargs, flush=True)
+    except UnicodeEncodeError:
+        text = " ".join(str(a) for a in args)
+        print(text.encode('ascii', 'replace').decode(), flush=True)
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,7 +64,7 @@ def start_health_server():
     port = int(os.environ.get('PORT', 8000))
     server = HTTPServer(('0.0.0.0', port), HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"[HEALTH] HTTP server on port {port}")
+    safe_print(f"[HEALTH] HTTP server on port {port}")
 
 
 # ============================================
@@ -110,7 +123,7 @@ class StandaloneBot:
                     json={"chat_id": self.chat_id, "text": chunk, "parse_mode": parse_mode}, timeout=10)
             return True
         except Exception as e:
-            print(f"[SEND ERR] {e}")
+            safe_print(f"[SEND ERR] {e}")
             return False
 
     def get_updates(self):
@@ -129,7 +142,7 @@ class StandaloneBot:
             # Price
             ticker = self.api.get_price(PAIR)
             if not ticker.get('success'):
-                print("[WARN] Price fetch failed")
+                safe_print("[WARN] Price fetch failed")
                 return False
             price = ticker['last']
 
@@ -221,11 +234,11 @@ class StandaloneBot:
                 "last_update": datetime.now().strftime('%H:%M:%S'),
             })
 
-            print(f"[OK] V4 Analysis | Rp {price:,.0f} | {ai_signal['label']} | ML: {ml_result.get('ml_signal', 'N/A')}")
+            safe_print(f"[OK] V4 Analysis | Rp {price:,.0f} | {ai_signal['label']} | ML: {ml_result.get('ml_signal', 'N/A')}")
             return True
 
         except Exception as e:
-            print(f"[ERROR] Analysis: {e}")
+            safe_print(f"[ERROR] Analysis: {e}")
             traceback.print_exc()
             return False
 
@@ -642,7 +655,7 @@ class StandaloneBot:
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"[Groq Error] {e}")
+            safe_print(f"[Groq Error] {e}")
             return (
                 f"🤖 AI sedang sibuk. Gunakan perintah:\n"
                 "/status — Market\n/predict — Prediksi\n/sinyal — Sinyal AI"
@@ -652,22 +665,22 @@ class StandaloneBot:
     # MAIN LOOP
     # ============================================
     def run(self):
-        print("=" * 55)
-        print("🤖 ISLM Monitor V4 — Standalone Bot")
-        print(f"📡 Token: ...{self.token[-6:]}" if self.token else "❌ NO TOKEN!")
-        print(f"💬 Chat ID: {self.chat_id}")
-        print(f"⏱️ Intervals: 30min / 1h / Daily")
-        print(f"🧠 ProTA: {'✅' if True else '❌'} | ML: {'✅' if True else '❌'}")
-        print("=" * 55)
+        safe_print("=" * 55)
+        safe_print("🤖 ISLM Monitor V4 — Standalone Bot")
+        safe_print(f"📡 Token: ...{self.token[-6:]}" if self.token else "❌ NO TOKEN!")
+        safe_print(f"💬 Chat ID: {self.chat_id}")
+        safe_print(f"⏱️ Intervals: 30min / 1h / Daily")
+        safe_print(f"🧠 ProTA: {'✅' if True else '❌'} | ML: {'✅' if True else '❌'}")
+        safe_print("=" * 55)
 
         start_health_server()
 
         if not self.token or not self.chat_id:
-            print("[FATAL] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID!")
+            safe_print("[FATAL] Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID!")
             return
 
         # Initial analysis
-        print("[INIT] Running first analysis...")
+        safe_print("[INIT] Running first analysis...")
         if self.refresh_analysis():
             self.send_message(
                 "🟢 *ISLM Bot V4 AKTIF*\n\n"
@@ -708,7 +721,7 @@ class StandaloneBot:
                         elif 'message' in u:
                             txt = u['message'].get('text', '')
                             if txt:
-                                print(f"[MSG] {txt}")
+                                safe_print(f"[MSG] {txt}")
                                 self.send_message(self.handle_text_question(txt))
 
                 # --- Multi-interval notifications ---
@@ -716,31 +729,31 @@ class StandaloneBot:
 
                 # 30-minute update
                 if now - self.last_30min >= INTERVAL_30MIN:
-                    print("[30MIN] Sending quick update...")
+                    safe_print("[30MIN] Sending quick update...")
                     if self.refresh_analysis():
                         self.send_30min_update()
                     self.last_30min = now
 
                 # 1-hour update
                 if now - self.last_1hour >= INTERVAL_1HOUR:
-                    print("[1HOUR] Sending full analysis...")
+                    safe_print("[1HOUR] Sending full analysis...")
                     if self.refresh_analysis():
                         self.send_1hour_update()
                     self.last_1hour = now
 
                 # Daily update
                 if now - self.last_daily >= INTERVAL_DAILY:
-                    print("[DAILY] Sending daily recap...")
+                    safe_print("[DAILY] Sending daily recap...")
                     if self.refresh_analysis():
                         self.send_daily_update()
                     self.last_daily = now
 
             except KeyboardInterrupt:
-                print("\n[EXIT] Bot stopped.")
+                safe_print("\n[EXIT] Bot stopped.")
                 self.send_message("🔴 *Bot V4 Stopped*")
                 break
             except Exception as e:
-                print(f"[ERROR] {e}")
+                safe_print(f"[ERROR] {e}")
                 traceback.print_exc()
                 time.sleep(10)
 
