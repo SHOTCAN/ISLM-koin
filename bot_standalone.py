@@ -302,7 +302,7 @@ class StandaloneBot:
         self.send_message(msg)
 
     # ============================================
-    # NOTIFICATION: 1 Jam — Full Analysis
+    # NOTIFICATION: 1 Jam — Full Analysis V5
     # ============================================
     def send_1hour_update(self):
         c = self._cache
@@ -311,10 +311,10 @@ class StandaloneBot:
         pta = c["pro_ta"]
 
         lines = [
-            "🤖 *ISLM FULL ANALYSIS (1 Jam)*",
+            "🤖 *ISLM FULL ANALYSIS V5 (1 Jam)*",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"💰 *Harga:* Rp {c['price']:,.0f}",
-            f"📢 *Rule-Based:* {sig['label']} ({sig['confidence']*100:.0f}%)",
+            f"📢 *AI Signal:* {sig['label']} ({sig['confidence']*100:.0f}%)",
         ]
 
         if ml.get('ml_available'):
@@ -333,16 +333,19 @@ class StandaloneBot:
             lines.append(f"  ATR: {c['atr']:.2f}")
         if c['bb_upper']:
             lines.append(f"  BB: Rp {c['bb_lower']:,.0f} — Rp {c['bb_upper']:,.0f}")
-
-        # ProTA extras
         if pta.get('adx'):
             lines.append(f"  ADX: {pta['adx']:.0f}")
         if pta.get('mfi'):
             lines.append(f"  MFI: {pta['mfi']:.0f}")
-        if pta.get('williams_r') is not None:
-            lines.append(f"  Williams %R: {pta['williams_r']:.0f}")
-        if pta.get('roc') is not None:
-            lines.append(f"  ROC: {pta['roc']:.2f}")
+
+        # V5: Risk Metrics
+        if len(self.price_history) >= 10:
+            try:
+                risk = RiskMetrics.full_report(self.price_history)
+                lines.append(f"\n📊 *RISK:*")
+                lines.append(f"  Sharpe: {risk['sharpe']:.2f} | MaxDD: {risk['max_dd']:.1f}%")
+                lines.append(f"  WinRate: {risk['win_rate']:.0f}% | VaR: {risk['var_95']:.2f}%")
+            except: pass
 
         # Support/Resistance
         if c['supports']:
@@ -350,7 +353,7 @@ class StandaloneBot:
         if c['resistances']:
             lines.append(f"🔴 *Resistance:* {', '.join(f'Rp {r:,.0f}' for r in c['resistances'])}")
 
-        # Predictions (top line)
+        # Predictions
         lines.append("\n🔮 *PREDIKSI:*")
         for k, p in c["predictions"].items():
             lines.append(f"  {p['label']}: Rp {p['target']:,.0f} ({p['change_pct']:+.1f}%) {p['direction']}")
@@ -363,6 +366,33 @@ class StandaloneBot:
         lines.append("\n🧠 *REASONING:*")
         for r in sig.get("reasons", [])[:5]:
             lines.append(f"  • {r}")
+
+        # V5: AI Strategy via Groq
+        try:
+            api_key = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
+            if api_key:
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                brief = (
+                    f"ISLM Rp {c['price']:,.0f}, RSI={c['rsi']:.0f}, MACD={c['hist']:+.2f}, "
+                    f"Signal={sig['label']}, Trend={sig['trend']}, Phase={c['market_phase']}, "
+                    f"Whale={c['whale_label']}, Predictions: "
+                    + ", ".join(f"{p['label']}={p['direction']}" for p in c['predictions'].values())
+                )
+                resp = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content":
+                            "Kamu AI trading strategist. Berikan STRATEGI AKSI 1 jam ke depan. "
+                            "Max 3 kalimat: (1) kondisi saat ini, (2) aksi yang disarankan, "
+                            "(3) level kunci yang harus diperhatikan. Bahasa Indonesia."},
+                        {"role": "user", "content": brief}
+                    ],
+                    max_tokens=200, temperature=0.7,
+                )
+                ai_strategy = resp.choices[0].message.content.strip()
+                lines.append(f"\n🧠 *AI STRATEGY:*\n{ai_strategy}")
+        except: pass
 
         lines.append(f"\n⏰ {c['last_update']} WIB | Next: 1h")
         self.send_message("\n".join(lines))
@@ -385,8 +415,10 @@ class StandaloneBot:
             open_price = close_price = avg_price = c['price']
             daily_change = 0
 
+        emoji_change = "🟢" if daily_change >= 0 else "🔴"
+
         lines = [
-            "📅 *ISLM DAILY RECAP*",
+            "📅 *ISLM DAILY RECAP V5*",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"📆 {datetime.now().strftime('%d %B %Y')}",
             "",
@@ -396,7 +428,7 @@ class StandaloneBot:
             f"  High: Rp {self.daily_high:,.0f}",
             f"  Low: Rp {self.daily_low:,.0f}",
             f"  Avg: Rp {avg_price:,.0f}",
-            f"  Change: {daily_change:+.2f}%",
+            f"  {emoji_change} Change: {daily_change:+.2f}%",
             "",
             f"📢 *Sinyal AI:* {sig['label']} ({sig['confidence']*100:.0f}%)",
         ]
@@ -407,10 +439,22 @@ class StandaloneBot:
         lines += [
             f"📈 *Trend:* {sig['trend']}",
             f"🏷️ *Fase:* {c['market_phase']}",
-            "",
-            "🔮 *PREDIKSI BESOK:*",
         ]
 
+        # V5: Risk Metrics
+        if len(self.price_history) >= 10:
+            try:
+                risk = RiskMetrics.full_report(self.price_history)
+                risk_level = '🟢 RENDAH' if risk['max_dd'] < 5 else '🟡 SEDANG' if risk['max_dd'] < 15 else '🔴 TINGGI'
+                lines.append(f"\n📊 *RISK METRICS:*")
+                lines.append(f"  Sharpe Ratio: {risk['sharpe']:.2f}")
+                lines.append(f"  Max Drawdown: {risk['max_dd']:.1f}%")
+                lines.append(f"  Win Rate: {risk['win_rate']:.0f}%")
+                lines.append(f"  VaR (95%): {risk['var_95']:.2f}%")
+                lines.append(f"  Level Risiko: {risk_level}")
+            except: pass
+
+        lines.append("\n🔮 *PREDIKSI BESOK:*")
         for k, p in c["predictions"].items():
             lines.append(
                 f"  {p['label']}: Rp {p['target']:,.0f} ({p['change_pct']:+.1f}%)\n"
@@ -424,14 +468,40 @@ class StandaloneBot:
             if c['resistances']:
                 lines.append(f"  🔴 Resistance: {', '.join(f'Rp {r:,.0f}' for r in c['resistances'])}")
 
-        # News
-        news = NewsEngine.generate_news(c['market_phase'], c['whale_ratio'])
-        lines.append(f"\n📰 *NEWS:* {news}")
+        # V5: Security Status
+        try:
+            sec_status = self.security.get_security_status()
+            lines.append(f"\n🛡️ *SECURITY:* {sec_status['threat_level']} | Threats: {sec_status['threat_count']}")
+        except: pass
 
-        # Full reasoning
-        lines.append("\n🧠 *ANALISA LENGKAP:*")
-        for r in sig.get("reasons", []):
-            lines.append(f"  • {r}")
+        # V5: AI Daily Summary via Groq
+        try:
+            api_key = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
+            if api_key:
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                daily_context = (
+                    f"ISLM hari ini: Open Rp {open_price:,.0f}, Close Rp {close_price:,.0f}, "
+                    f"High Rp {self.daily_high:,.0f}, Low Rp {self.daily_low:,.0f}, "
+                    f"Change {daily_change:+.2f}%, Signal={sig['label']}, "
+                    f"Trend={sig['trend']}, Phase={c['market_phase']}, "
+                    f"Whale={c['whale_label']}, Samples={len(self.price_history)}"
+                )
+                resp = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content":
+                            "Kamu AI trading analyst. Buat RINGKASAN HARIAN ISLM dalam 4 kalimat: "
+                            "(1) Apa yang terjadi hari ini, (2) Faktor utama penggerak, "
+                            "(3) Outlook untuk besok, (4) Saran strategi. "
+                            "Bahasa Indonesia santai tapi profesional."},
+                        {"role": "user", "content": daily_context}
+                    ],
+                    max_tokens=250, temperature=0.7,
+                )
+                ai_recap = resp.choices[0].message.content.strip()
+                lines.append(f"\n🧠 *AI DAILY SUMMARY:*\n{ai_recap}")
+        except: pass
 
         uptime_h = (time.time() - self.start_time) / 3600
         lines.append(f"\n⏱️ Uptime: {uptime_h:.1f} jam | Samples: {len(self.price_history)}")

@@ -633,23 +633,23 @@ class TrendStrengthIndex:
 
 
 # ============================================
-# UNIFIED AI SIGNAL ENGINE V4
+# UNIFIED AI SIGNAL ENGINE V5
 # ============================================
 class AISignalEngine:
-    """Gabungan Rule-Based + ML + ProTA = Sinyal AI V4 dengan Reasoning."""
+    """Gabungan Rule-Based + ML + ProTA + V5 Modules = Sinyal AI V5 dengan Reasoning."""
 
     @staticmethod
     def compute(rsi, macd_hist, price, bb_mid, bb_upper, bb_lower,
                 candle_bull_count, candle_bear_count, whale_ratio, fundamental_score,
-                pro_ta=None, ml_result=None):
+                pro_ta=None, ml_result=None, prices=None, volumes=None):
         score = 0.0
         reasons = []
 
-        # --- RSI (25%) ---
+        # --- RSI (20%) ---
         if rsi < 30:
-            score += 0.25; reasons.append(f"📊 RSI={rsi:.0f} → Oversold (Jenuh Jual)")
+            score += 0.20; reasons.append(f"📊 RSI={rsi:.0f} → Oversold (Jenuh Jual)")
         elif rsi > 70:
-            score -= 0.25; reasons.append(f"📊 RSI={rsi:.0f} → Overbought (Jenuh Beli)")
+            score -= 0.20; reasons.append(f"📊 RSI={rsi:.0f} → Overbought (Jenuh Beli)")
         elif rsi < 45:
             score += 0.08; reasons.append(f"📊 RSI={rsi:.0f} → Cenderung Bullish")
         elif rsi > 55:
@@ -657,47 +657,46 @@ class AISignalEngine:
         else:
             reasons.append(f"📊 RSI={rsi:.0f} → Netral")
 
-        # --- MACD (15%) ---
+        # --- MACD (12%) ---
         if macd_hist > 0:
-            score += 0.15; reasons.append(f"📈 MACD Histogram +{macd_hist:.2f} → Momentum Naik")
+            score += 0.12; reasons.append(f"📈 MACD Histogram +{macd_hist:.2f} → Momentum Naik")
         else:
-            score -= 0.15; reasons.append(f"📉 MACD Histogram {macd_hist:.2f} → Momentum Turun")
+            score -= 0.12; reasons.append(f"📉 MACD Histogram {macd_hist:.2f} → Momentum Turun")
 
-        # --- Bollinger Bands (15%) ---
+        # --- Bollinger Bands (10%) ---
         if bb_mid is not None and bb_lower is not None and bb_upper is not None:
             if price < bb_lower:
-                score += 0.15; reasons.append("🔽 Harga di BAWAH BB Lower → Potensi Rebound")
+                score += 0.10; reasons.append("🔽 Harga di BAWAH BB Lower → Potensi Rebound")
             elif price > bb_upper:
-                score -= 0.15; reasons.append("🔼 Harga di ATAS BB Upper → Potensi Koreksi")
+                score -= 0.10; reasons.append("🔼 Harga di ATAS BB Upper → Potensi Koreksi")
             else:
                 bb_pos = (price - bb_lower) / (bb_upper - bb_lower + 1e-10) * 100
                 reasons.append(f"📐 Posisi BB: {bb_pos:.0f}%")
 
-        # --- Candle Patterns (10%) ---
+        # --- Candle Patterns (8%) ---
         net = candle_bull_count - candle_bear_count
-        score += net * 0.1
+        score += net * 0.08
         if candle_bull_count > 0: reasons.append(f"🕯️ {candle_bull_count} Pola Bullish")
         if candle_bear_count > 0: reasons.append(f"🕯️ {candle_bear_count} Pola Bearish")
 
-        # --- Whale (12%) ---
+        # --- Whale (10%) ---
         if whale_ratio >= 0.6:
-            score += 0.12; reasons.append(f"🐋 Whale BELI dominan ({whale_ratio*100:.0f}%) → Akumulasi")
+            score += 0.10; reasons.append(f"🐋 Whale BELI dominan ({whale_ratio*100:.0f}%) → Akumulasi")
         elif whale_ratio <= 0.4:
-            score -= 0.12; reasons.append(f"🐋 Whale JUAL dominan ({whale_ratio*100:.0f}%) → Distribusi")
+            score -= 0.10; reasons.append(f"🐋 Whale JUAL dominan ({whale_ratio*100:.0f}%) → Distribusi")
         else:
             reasons.append(f"🐋 Whale seimbang ({whale_ratio*100:.0f}%)")
 
-        # --- Fundamental (10%) ---
+        # --- Fundamental (8%) ---
         if fundamental_score >= 6:
-            score += 0.1; reasons.append(f"🌙 Fundamental KUAT (Skor: {fundamental_score}/10)")
+            score += 0.08; reasons.append(f"🌙 Fundamental KUAT (Skor: {fundamental_score}/10)")
         elif fundamental_score <= 2:
-            score -= 0.1; reasons.append(f"⚠️ Fundamental LEMAH (Skor: {fundamental_score}/10)")
+            score -= 0.08; reasons.append(f"⚠️ Fundamental LEMAH (Skor: {fundamental_score}/10)")
         else:
             reasons.append(f"📋 Fundamental Netral (Skor: {fundamental_score}/10)")
 
         # --- ProTA Extras (if available) ---
         if pro_ta:
-            # ADX trend strength
             adx = pro_ta.get('adx', 0)
             if adx > 25:
                 reasons.append(f"💪 Trend KUAT (ADX={adx:.0f})")
@@ -708,16 +707,15 @@ class AISignalEngine:
             elif adx < 20:
                 reasons.append(f"😶 Trend LEMAH (ADX={adx:.0f}) → Sideways")
 
-            # EMA Cross
             ema9 = pro_ta.get('ema_9')
             ema21 = pro_ta.get('ema_21')
             if ema9 and ema21:
+                ema_gap = abs(ema9 - ema21) / (ema21 + 1e-10) * 100
                 if ema9 > ema21:
-                    score += 0.05; reasons.append("✨ EMA9 > EMA21 → Golden Cross")
+                    score += 0.05; reasons.append(f"✨ EMA9 > EMA21 → Golden Cross (gap: {ema_gap:.1f}%)")
                 else:
-                    score -= 0.05; reasons.append("💀 EMA9 < EMA21 → Death Cross")
+                    score -= 0.05; reasons.append(f"💀 EMA9 < EMA21 → Death Cross (gap: {ema_gap:.1f}%)")
 
-            # MFI (Money Flow Index)
             mfi = pro_ta.get('mfi')
             if mfi is not None:
                 if mfi < 20:
@@ -725,7 +723,6 @@ class AISignalEngine:
                 elif mfi > 80:
                     score -= 0.05; reasons.append(f"💸 MFI={mfi:.0f} → Uang Keluar (Overbought)")
 
-            # Williams %R
             wr = pro_ta.get('williams_r')
             if wr is not None:
                 if wr < -80:
@@ -733,7 +730,41 @@ class AISignalEngine:
                 elif wr > -20:
                     reasons.append(f"📈 Williams %R={wr:.0f} → Overbought")
 
-        # --- ML Signal (if available) ---
+        # --- V5: Fibonacci Analysis (5%) ---
+        if prices and len(prices) >= 10:
+            try:
+                fib = QuantAnalyzer.calculate_fibonacci(max(prices[-20:]), min(prices[-20:]))
+                if price <= fib.get('0.618', 0):
+                    score += 0.05; reasons.append(f"📐 Harga di bawah Fib 0.618 → Support kuat")
+                elif price >= fib.get('0.382', float('inf')):
+                    score -= 0.03; reasons.append(f"📐 Harga di atas Fib 0.382 → Resistance")
+            except: pass
+
+        # --- V5: Trend Strength Index (5%) ---
+        if pro_ta and prices:
+            try:
+                tsi = TrendStrengthIndex.calculate(pro_ta, prices, volumes)
+                tsi_label = TrendStrengthIndex.interpret(tsi)
+                if tsi > 70:
+                    score += 0.05; reasons.append(f"📊 Trend Strength: {tsi:.0f}/100 → {tsi_label}")
+                elif tsi < 30:
+                    score -= 0.03; reasons.append(f"📊 Trend Strength: {tsi:.0f}/100 → {tsi_label}")
+                else:
+                    reasons.append(f"📊 Trend Strength: {tsi:.0f}/100 → {tsi_label}")
+            except: pass
+
+        # --- V5: Volume-Price Divergence (5%) ---
+        if volumes and prices and len(volumes) >= 5 and len(prices) >= 5:
+            try:
+                price_change = (prices[-1] - prices[-5]) / (prices[-5] + 1e-10)
+                vol_change = (volumes[-1] - volumes[-5]) / (volumes[-5] + 1e-10)
+                if price_change > 0 and vol_change < -0.2:
+                    score -= 0.05; reasons.append("⚠️ Divergensi: Harga naik tapi volume turun → Bearish")
+                elif price_change < 0 and vol_change > 0.2:
+                    score += 0.05; reasons.append("📈 Divergensi: Harga turun tapi volume naik → Akumulasi")
+            except: pass
+
+        # --- ML Signal (if available, 10%) ---
         if ml_result and ml_result.get('ml_available'):
             ml_sig = ml_result['ml_signal']
             ml_conf = ml_result['ml_confidence']
@@ -743,7 +774,7 @@ class AISignalEngine:
                 score -= 0.1 * ml_conf
             reasons.append(f"🤖 ML Model: {ml_sig} ({ml_conf*100:.0f}% confidence)")
 
-        # --- Final ---
+        # --- Final V5 ---
         score = max(-1.0, min(1.0, score))
         confidence = abs(score)
         if score >= 0.4: label = "STRONG BUY 🚀"
@@ -762,7 +793,7 @@ class AISignalEngine:
     @staticmethod
     def generate_ai_summary(signal_result, price, predictions=None):
         lines = [
-            "🤖 *ANALISA AI ISLM MONITOR V4*",
+            "🤖 *ANALISA AI ISLM MONITOR V5*",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"💰 *Harga:* Rp {price:,.0f}",
             f"📢 *Sinyal:* {signal_result['label']}",
