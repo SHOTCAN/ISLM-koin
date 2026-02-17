@@ -147,22 +147,51 @@ class StandaloneBot:
         self._groq_daily_count = 0
         self._groq_daily_reset = time.time()
 
-        # V7+: Multi-Key Rotation
-        self._groq_keys = []
+        # V7+: Role-Based Multi-Key System
+        # KEY_1=Chat (RESERVED for user!), KEY_2=Market, KEY_3=Predictor, KEY_4=Security, KEY_5=Vision
+        self._groq_keys = {}  # {role: [primary_key, fallback_keys...]}
+        raw_keys = []
         for i in range(1, 6):
             key = os.environ.get(f'GROQ_API_KEY_{i}', '')
             if key:
-                self._groq_keys.append(key)
+                raw_keys.append(key)
         # Fallback to single key
-        if not self._groq_keys:
+        if not raw_keys:
             fallback = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
             if not fallback:
                 fallback = os.environ.get('GROQ_API_KEY', '')
             if fallback:
-                self._groq_keys.append(fallback)
-        self._current_key_idx = 0
-        self._key_errors = {}  # {idx: last_error_time}
-        safe_print(f"[AI] Loaded {len(self._groq_keys)} Groq API key(s)")
+                raw_keys.append(fallback)
+
+        # Assign roles based on how many keys available
+        self._all_keys = raw_keys
+        if len(raw_keys) >= 5:
+            self._groq_keys = {
+                'chat':     [raw_keys[0], raw_keys[4], raw_keys[1]],  # KEY1, fallback KEY5, KEY2
+                'market':   [raw_keys[1], raw_keys[2], raw_keys[0]],  # KEY2, fallback KEY3, KEY1
+                'predict':  [raw_keys[2], raw_keys[1], raw_keys[3]],  # KEY3, fallback KEY2, KEY4
+                'security': [raw_keys[3], raw_keys[4], raw_keys[2]],  # KEY4, fallback KEY5, KEY3
+                'vision':   [raw_keys[4], raw_keys[0], raw_keys[3]],  # KEY5, fallback KEY1, KEY4
+            }
+        elif len(raw_keys) >= 2:
+            self._groq_keys = {
+                'chat':     [raw_keys[0]] + raw_keys[1:],
+                'market':   [raw_keys[1]] + [raw_keys[0]] + raw_keys[2:],
+                'predict':  raw_keys,
+                'security': list(reversed(raw_keys)),
+                'vision':   [raw_keys[-1]] + raw_keys[:-1],
+            }
+        elif len(raw_keys) == 1:
+            self._groq_keys = {
+                'chat': raw_keys, 'market': raw_keys, 'predict': raw_keys,
+                'security': raw_keys, 'vision': raw_keys,
+            }
+
+        self._key_errors = {}  # {key_string: last_error_time}
+        role_names = {'chat': '🤖Chat', 'market': '📊Market', 'predict': '🔮Predict', 'security': '🛡️Security', 'vision': '🖼️Vision'}
+        safe_print(f"[AI] Loaded {len(raw_keys)} Groq API key(s), {len(self._groq_keys)} roles assigned")
+        for role, keys in self._groq_keys.items():
+            safe_print(f"  {role_names.get(role, role)}: {len(keys)} key(s)")
 
         # AI cache
         self._cache = {
@@ -1039,29 +1068,32 @@ class StandaloneBot:
         return self._ask_groq_ai(text)
 
     # ============================================
-    # GROQ AI V7 — Multi-Key + Genius Mode + Memory
+    # GROQ AI V7+ — Role-Based Multi-Key + Genius Mode
     # ============================================
-    def _get_groq_client(self):
-        """Get Groq client with auto-rotation across multiple API keys."""
-        if not self._groq_keys:
-            return None, -1
+    def _get_groq_client(self, role='chat'):
+        """Get Groq client for a specific role. Each role has dedicated + fallback keys."""
+        keys_for_role = self._groq_keys.get(role, [])
+        if not keys_for_role:
+            # Fallback: try any available key
+            keys_for_role = self._all_keys if self._all_keys else []
+        if not keys_for_role:
+            return None, 'none'
         from groq import Groq
         now = time.time()
-        for attempt in range(len(self._groq_keys)):
-            idx = (self._current_key_idx + attempt) % len(self._groq_keys)
-            last_err = self._key_errors.get(idx, 0)
-            if now - last_err < 60 and attempt < len(self._groq_keys) - 1:
+        for i, key in enumerate(keys_for_role):
+            last_err = self._key_errors.get(key, 0)
+            if now - last_err < 60 and i < len(keys_for_role) - 1:
                 continue
-            self._current_key_idx = idx
-            return Groq(api_key=self._groq_keys[idx]), idx
-        self._current_key_idx = 0
-        return Groq(api_key=self._groq_keys[0]), 0
+            key_num = self._all_keys.index(key) + 1 if key in self._all_keys else '?'
+            return Groq(api_key=key), key
+        # All exhausted — use first anyway
+        return Groq(api_key=keys_for_role[0]), keys_for_role[0]
 
-    def _rotate_key(self, failed_idx):
-        """Mark a key as failed and rotate to next."""
-        self._key_errors[failed_idx] = time.time()
-        self._current_key_idx = (failed_idx + 1) % len(self._groq_keys)
-        safe_print(f"[AI] Key #{failed_idx+1} rate-limited → switching to Key #{self._current_key_idx+1}")
+    def _rotate_key(self, failed_key, role='chat'):
+        """Mark a key as failed and log rotation."""
+        self._key_errors[failed_key] = time.time()
+        key_num = self._all_keys.index(failed_key) + 1 if failed_key in self._all_keys else '?'
+        safe_print(f"[AI] Key #{key_num} ({role}) rate-limited → trying next fallback")
 
     def _ask_groq_ai(self, user_message):
         """Send user message to Groq AI with full market context, memory, and genius-level understanding."""
@@ -1074,7 +1106,7 @@ class StandaloneBot:
             )
         try:
             from backend.core_logic import BTCCorrelation, RiskMetrics
-            client, key_idx = self._get_groq_client()
+            client, used_key = self._get_groq_client('chat')
             c = self._cache
             sig = c["ai_signal"]
             ml = c["ml_result"]
@@ -1279,17 +1311,18 @@ class StandaloneBot:
             return ai_reply
         except Exception as e:
             err_str = str(e)
-            safe_print(f"[Groq Error] Key #{key_idx+1}: {err_str[:80]}")
+            key_num = self._all_keys.index(used_key) + 1 if used_key in self._all_keys else '?'
+            safe_print(f"[Groq Error] Chat Key #{key_num}: {err_str[:80]}")
             self._stats['errors'] += 1
 
             # Rate limit or model error → rotate to next key
             if 'rate_limit' in err_str.lower() or '429' in err_str or 'limit' in err_str.lower():
-                self._rotate_key(key_idx)
-                if len(self._groq_keys) > 1:
+                self._rotate_key(used_key, 'chat')
+                if len(self._groq_keys.get('chat', [])) > 1:
                     return self._ask_groq_ai(user_message)
 
             return (
-                f"🤖 AI sedang sibuk (Key #{key_idx+1}). Gunakan perintah:\n"
+                f"🤖 AI Chat sedang sibuk. Gunakan perintah:\n"
                 "/status — Market\n/predict — Prediksi\n/sinyal — Sinyal AI"
             )
 
@@ -1327,8 +1360,8 @@ class StandaloneBot:
             ext = file_path.split('.')[-1].lower() if '.' in file_path else 'jpg'
             mime = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else ext}"
 
-            # Send to Groq Vision
-            client, key_idx = self._get_groq_client()
+            # Send to Groq Vision (dedicated vision key)
+            client, used_key = self._get_groq_client('vision')
             if not client:
                 return "❌ AI Vision tidak tersedia (API key missing)."
 
@@ -1375,10 +1408,10 @@ class StandaloneBot:
             safe_print(f"[VISION Error] {err_str[:100]}")
             self._stats['errors'] += 1
 
-            # Rate limit → rotate key
+            # Rate limit → rotate vision key
             if 'rate_limit' in err_str.lower() or '429' in err_str:
-                self._rotate_key(key_idx)
-                if len(self._groq_keys) > 1:
+                self._rotate_key(used_key, 'vision')
+                if len(self._groq_keys.get('vision', [])) > 1:
                     return self.handle_photo(photo_list, caption)
 
             return f"❌ Gagal analisa gambar: {err_str[:100]}"
@@ -1668,12 +1701,10 @@ class StandaloneBot:
             f"🐋 {c['whale_label']}",
         ]
 
-        # Quick AI take
+        # Quick AI take (uses dedicated market key)
         try:
-            api_key = Config.GROQ_API_KEY or os.environ.get('GROQ_API_KEY', '')
-            if api_key:
-                from groq import Groq
-                client = Groq(api_key=api_key)
+            client, _ = self._get_groq_client('market')
+            if client:
                 resp = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[
