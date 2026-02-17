@@ -1,15 +1,15 @@
 """
-ISLM Monitor — Standalone Telegram AI Bot V4
+ISLM Monitor — Standalone Telegram AI Bot V7
 =============================================
-Jalan INDEPENDEN dari Streamlit. Deploy ke Koyeb/Railway = 24/7.
+Jalan INDEPENDEN dari Streamlit. Deploy ke Railway = 24/7.
 
-Notifikasi Multi-Interval:
-  - 30 menit : Quick status (harga, sinyal, trend)
-  - 1 jam    : Full analysis + indicators + ML
-  - 1 hari   : Daily summary + prediksi + rekap
-
-Smart Intent Recognition (10 kategori via Telegram chat)
-AI Engine V4: ProTA + ML + Support/Resistance
+V7 Features:
+  - AI Genius Mode + Memory + Chain-of-Thought
+  - Smart Price Alerts (±3% auto-notify)
+  - Volatility Adaptive System (10min during turbulence)
+  - Image Analysis (Groq Vision)
+  - Phone Number Lookup
+  - Groq Rate Limiter + Anti-spam
 """
 
 import sys
@@ -52,21 +52,31 @@ import requests
 
 
 # ============================================
-# HEALTH CHECK SERVER (for Koyeb/Cloud)
 # ============================================
+# HEALTH CHECK SERVER (Railway IPv6 compatible)
+# ============================================
+import socket
+
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b'ISLM Bot V4 OK')
+        self.wfile.write(b'ISLM Bot V7 OK')
     def log_message(self, *a): pass
+
+class IPv6HTTPServer(HTTPServer):
+    address_family = socket.AF_INET6
 
 def start_health_server():
     port = int(os.environ.get('PORT', 8000))
-    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    try:
+        server = IPv6HTTPServer(('::', port), HealthHandler)
+        safe_print(f"[HEALTH] HTTP server on [::] port {port} (IPv6)")
+    except Exception:
+        server = HTTPServer(('0.0.0.0', port), HealthHandler)
+        safe_print(f"[HEALTH] HTTP server on 0.0.0.0 port {port} (IPv4 fallback)")
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    safe_print(f"[HEALTH] HTTP server on port {port}")
 
 
 # ============================================
@@ -130,6 +140,12 @@ class StandaloneBot:
 
         # V6: Conversation memory
         self._chat_memory = []
+
+        # V7: Groq Rate Limiter
+        self._groq_requests = []  # timestamps of recent requests
+        self._groq_rpm_limit = 28  # stay under 30 RPM free tier
+        self._groq_daily_count = 0
+        self._groq_daily_reset = time.time()
 
         # AI cache
         self._cache = {
@@ -555,7 +571,7 @@ class StandaloneBot:
         # /start /menu /help
         if t in ['/start', '/menu', '/help', 'help', 'bantuan', 'menu']:
             return (
-                "🤖 *ISLM AI V5 — MENU*\n\n"
+                "🤖 *ISLM AI V7 — MENU*\n\n"
                 "*📊 Market:*\n"
                 "  /status — Kondisi market\n"
                 "  /predict — Prediksi harga\n"
@@ -564,21 +580,30 @@ class StandaloneBot:
                 "  /ml — Sinyal ML\n\n"
                 "*🪙 Multi-Coin:*\n"
                 "  /coin — Top coins Indodax\n"
-                "  /coin btc — Harga BTC\n"
-                "  /coin eth — Harga ETH\n\n"
+                "  /coin btc — Harga BTC\n\n"
                 "*📈 Advanced:*\n"
                 "  /risk — Sharpe, MaxDD, WinRate\n"
                 "  /level — Support & Resistance\n"
                 "  /whale — Whale tracker\n"
                 "  /candle — Pola candlestick\n"
                 "  /news — Berita & fundamental\n\n"
-                "*🛡️ Security:*\n"
+                "*🆕 V7 Features:*\n"
+                "  �️ Kirim gambar — AI analisa\n"
+                "  /cek [nomor] — Cek nomor HP\n\n"
+                "*�🛡️ Security:*\n"
                 "  /security — Status keamanan\n\n"
                 "💬 *CHAT BEBAS:* Tanya apa saja!\n"
                 "_Contoh: \"ISLM naik gak?\"_\n"
-                "_Contoh: \"Lagi galau, rugi trading...\"_\n"
-                "_Contoh: \"Bandingin BTC vs ISLM\"_"
+                "_Contoh: \"Bandingin BTC vs ISLM\"_\n"
+                "_Contoh: /cek 08123456789_"
             )
+
+        # PHONE LOOKUP — V7
+        if t.startswith('/cek') or t.startswith('cek '):
+            parts = text.strip().split(maxsplit=1)
+            if len(parts) >= 2:
+                return self.lookup_phone(parts[1])
+            return "📱 *Cara pakai:*\n/cek 08123456789\n/cek +628123456789"
 
         # STATUS
         if any(k in t for k in ['/status', 'status', 'harga', 'price', 'berapa', 'market', 'kondisi']):
@@ -927,17 +952,30 @@ class StandaloneBot:
 
                 f"=== DATA REAL-TIME ===\n{market_context}\n\n"
 
-                "=== ATURAN WAJIB ===\n"
-                "- SELALU sertakan angka/data real-time yang relevan\n"
-                "- Gunakan emoji yang sesuai konteks (jangan berlebihan)\n"
-                "- Format rapi: gunakan bullet points, bold untuk angka penting\n"
-                "- Jawab dalam Bahasa Indonesia yang natural dan santai\n"
-                "- Kalau tidak yakin, berikan range/kemungkinan, bukan jawaban absolut\n"
-                "- Akhiri dengan actionable insight atau pertanyaan follow-up\n"
-                "- Maksimal 500 kata (singkat tapi padat)\n"
-                "- PENTING: Jika user bertanya sesuatu yang tidak terkait crypto/trading, "
-                "  tetap jawab dengan baik lalu kaitkan ke konteks investasi jika memungkinkan"
+                "=== ATURAN WAJIB (SANGAT PENTING!) ===\n"
+                "- JAWAB SINGKAT DAN PADAT! Maksimal 3-5 paragraf pendek.\n"
+                "- JANGAN panjang lebar. User BENCI jawaban yang terlalu panjang.\n"
+                "- Sertakan angka/data real-time yang RELEVAN saja, jangan semua data.\n"
+                "- Gunakan emoji SECUKUPNYA (max 5-8 emoji per jawaban)\n"
+                "- Format rapi: bullet points singkat, bold untuk angka penting\n"
+                "- Bahasa Indonesia natural dan santai\n"
+                "- Akhiri dengan 1 kalimat actionable insight\n"
+                "- Jika user tanya di luar crypto, jawab singkat lalu kaitkan ke investasi\n"
+                "- INGAT: SINGKAT = BAGUS. Panjang = SPAM. User sudah komplain soal ini!"
             )
+
+            # === V7: RATE LIMITER ===
+            now_ts = time.time()
+            # Clean old requests (older than 60s)
+            self._groq_requests = [t for t in self._groq_requests if now_ts - t < 60]
+            if len(self._groq_requests) >= self._groq_rpm_limit:
+                wait_time = int(60 - (now_ts - self._groq_requests[0]))
+                return f"⏳ AI istirahat {wait_time} detik (limit 30 req/menit).\nCoba lagi sebentar ya! 🙏"
+
+            # Daily counter reset
+            if now_ts - self._groq_daily_reset >= 86400:
+                self._groq_daily_count = 0
+                self._groq_daily_reset = now_ts
 
             # === V6: BUILD MESSAGES WITH MEMORY ===
             messages = [{"role": "system", "content": system_prompt}]
@@ -952,9 +990,11 @@ class StandaloneBot:
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
-                max_tokens=900,
+                max_tokens=400,
                 temperature=0.7,
             )
+            self._groq_requests.append(time.time())
+            self._groq_daily_count += 1
             ai_reply = response.choices[0].message.content
 
             # Save to memory
@@ -973,6 +1013,190 @@ class StandaloneBot:
                 f"🤖 AI sedang sibuk. Gunakan perintah:\n"
                 "/status — Market\n/predict — Prediksi\n/sinyal — Sinyal AI"
             )
+
+    # ============================================
+    # V7: IMAGE ANALYSIS (Groq Vision)
+    # ============================================
+    def handle_photo(self, photo_list, caption=''):
+        """Download and analyze an image sent by user."""
+        try:
+            # Get highest resolution photo
+            photo = photo_list[-1]  # Last = highest res
+            file_id = photo['file_id']
+
+            # Get file path from Telegram
+            file_info = requests.get(
+                f"{self.base_url}/getFile",
+                params={'file_id': file_id}, timeout=10
+            ).json()
+
+            if not file_info.get('ok'):
+                return "❌ Gagal mengambil gambar dari Telegram."
+
+            file_path = file_info['result']['file_path']
+            file_url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+
+            # Download image
+            img_resp = requests.get(file_url, timeout=30)
+            if img_resp.status_code != 200:
+                return "❌ Gagal download gambar."
+
+            import base64
+            img_b64 = base64.b64encode(img_resp.content).decode('utf-8')
+
+            # Determine image type from file path
+            ext = file_path.split('.')[-1].lower() if '.' in file_path else 'jpg'
+            mime = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else ext}"
+
+            # Send to Groq Vision
+            api_key = Config.GROQ_API_KEY or os.environ.get('GROQ_API_KEY', '')
+            if not api_key:
+                return "❌ AI Vision tidak tersedia (API key missing)."
+
+            from groq import Groq
+            client = Groq(api_key=api_key)
+
+            # Rate limit check
+            now_ts = time.time()
+            self._groq_requests = [t for t in self._groq_requests if now_ts - t < 60]
+            if len(self._groq_requests) >= self._groq_rpm_limit:
+                wait_time = int(60 - (now_ts - self._groq_requests[0]))
+                return f"⏳ AI Vision istirahat {wait_time} detik. Coba lagi ya!"
+
+            user_prompt = caption if caption else "Analisa gambar ini secara detail. Jelaskan apa yang kamu lihat."
+
+            response = client.chat.completions.create(
+                model="llama-3.2-90b-vision-preview",
+                messages=[
+                    {"role": "system", "content":
+                        "Kamu AI analyst yang bisa menganalisa gambar. "
+                        "Kemampuanmu: analisa chart/grafik trading, soal matematika, "
+                        "pengenalan objek, pengetahuan umum, membaca teks di gambar. "
+                        "Jawab dalam Bahasa Indonesia yang santai tapi informatif. "
+                        "JAWAB SINGKAT DAN PADAT, maksimal 3-4 paragraf."
+                    },
+                    {"role": "user", "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:{mime};base64,{img_b64}"
+                        }}
+                    ]}
+                ],
+                max_tokens=400,
+                temperature=0.7,
+            )
+            self._groq_requests.append(time.time())
+            self._groq_daily_count += 1
+
+            result = response.choices[0].message.content
+            return f"🖼️ *ANALISA GAMBAR*\n━━━━━━━━━━━━━━━━━━━━━━\n\n{result}"
+
+        except Exception as e:
+            safe_print(f"[VISION Error] {e}")
+            return f"❌ Gagal analisa gambar: {str(e)[:100]}"
+
+    # ============================================
+    # V7: PHONE NUMBER LOOKUP
+    # ============================================
+    def lookup_phone(self, number):
+        """Lookup phone number info using Numverify API."""
+        try:
+            numverify_key = os.environ.get('NUMVERIFY_API_KEY', '')
+
+            # Clean the number
+            clean = number.strip().replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+            if clean.startswith('0'):
+                clean = '62' + clean[1:]  # Convert 08xx to 628xx
+            if not clean.startswith('+'):
+                clean = '+' + clean if not clean.startswith('62') else '+' + clean
+
+            if numverify_key:
+                # Use Numverify API
+                resp = requests.get(
+                    'http://apilayer.net/api/validate',
+                    params={
+                        'access_key': numverify_key,
+                        'number': clean,
+                        'country_code': 'ID',
+                        'format': 1
+                    },
+                    timeout=10
+                )
+                data = resp.json()
+
+                if data.get('valid'):
+                    lines = [
+                        f"📱 *HASIL CEK NOMOR*",
+                        f"━━━━━━━━━━━━━━━━━━━━━━",
+                        f"📞 Nomor: {data.get('international_format', clean)}",
+                        f"✅ Status: *VALID*",
+                        f"🏢 Operator: {data.get('carrier', 'Unknown')}",
+                        f"📍 Lokasi: {data.get('location', 'Unknown')}",
+                        f"📡 Tipe: {data.get('line_type', 'Unknown')}",
+                        f"🌍 Negara: {data.get('country_name', 'Unknown')}",
+                    ]
+                    return "\n".join(lines)
+                else:
+                    return f"❌ Nomor *{clean}* tidak valid atau tidak ditemukan."
+            else:
+                # Fallback: basic Indonesia number analysis
+                lines = [
+                    f"📱 *HASIL CEK NOMOR*",
+                    f"━━━━━━━━━━━━━━━━━━━━━━",
+                    f"📞 Nomor: {clean}",
+                ]
+
+                # Detect Indonesian operator by prefix
+                prefix = clean.replace('+62', '0')[:4]
+                operators = {
+                    '0811': 'Telkomsel (Halo)', '0812': 'Telkomsel (Simpati)',
+                    '0813': 'Telkomsel (Simpati)', '0821': 'Telkomsel (Simpati)',
+                    '0822': 'Telkomsel (Simpati)', '0823': 'Telkomsel (As)',
+                    '0851': 'Telkomsel (As)', '0852': 'Telkomsel (As)',
+                    '0853': 'Telkomsel (As)',
+                    '0814': 'Indosat (IM3)', '0815': 'Indosat (Matrix)',
+                    '0816': 'Indosat (Mentari)', '0855': 'Indosat (Matrix)',
+                    '0856': 'Indosat (IM3)', '0857': 'Indosat (IM3)',
+                    '0858': 'Indosat (Mentari)',
+                    '0817': 'XL Axiata', '0818': 'XL Axiata',
+                    '0819': 'XL Axiata', '0859': 'XL Axiata',
+                    '0877': 'XL Axiata', '0878': 'XL Axiata',
+                    '0831': 'Axis', '0832': 'Axis',
+                    '0833': 'Axis', '0838': 'Axis',
+                    '0895': 'Three (3)', '0896': 'Three (3)',
+                    '0897': 'Three (3)', '0898': 'Three (3)',
+                    '0899': 'Three (3)',
+                    '0881': 'Smartfren', '0882': 'Smartfren',
+                    '0883': 'Smartfren', '0884': 'Smartfren',
+                    '0885': 'Smartfren', '0886': 'Smartfren',
+                    '0887': 'Smartfren', '0888': 'Smartfren',
+                    '0889': 'Smartfren',
+                }
+
+                op = operators.get(prefix, None)
+                if not op:
+                    # Try 3-digit prefix
+                    prefix3 = clean.replace('+62', '0')[:3]
+                    for k, v in operators.items():
+                        if k.startswith(prefix3):
+                            op = v
+                            break
+
+                if op:
+                    lines.append(f"✅ Status: *VALID (Indonesia)*")
+                    lines.append(f"🏢 Operator: *{op}*")
+                    lines.append(f"📍 Negara: Indonesia 🇮🇩")
+                    lines.append(f"📡 Tipe: Mobile")
+                else:
+                    lines.append(f"⚠️ Operator tidak terdeteksi")
+                    lines.append(f"📍 Cek prefix: {prefix}")
+
+                lines.append(f"\n💡 _Tip: Set NUMVERIFY\\_API\\_KEY untuk info lebih lengkap (gratis di numverify.com)_")
+                return "\n".join(lines)
+
+        except Exception as e:
+            safe_print(f"[PHONE Error] {e}")
+            return f"❌ Gagal cek nomor: {str(e)[:100]}"
 
     # ============================================
     # V6: SMART PRICE ALERT
@@ -1154,8 +1378,9 @@ class StandaloneBot:
         safe_print(f"📡 Token: ...{self.token[-6:]}" if self.token else "❌ NO TOKEN!")
         safe_print(f"💬 Chat ID: {self.chat_id}")
         safe_print(f"⏱️ Intervals: 30min / 1h / Daily + Smart Alerts")
-        safe_print(f"🧠 AI V6: Memory + Chain-of-Thought")
+        safe_print(f"🧠 AI V7: Memory + Vision + Chain-of-Thought")
         safe_print(f"⚡ Volatility Mode: Adaptive (10min during turbulence)")
+        safe_print(f"📱 Phone Lookup: Active")
         safe_print("=" * 55)
 
         start_health_server()
@@ -1169,24 +1394,21 @@ class StandaloneBot:
         if self.refresh_analysis():
             self.last_alert_price = self._cache.get('price', 0)
             self.send_message(
-                "🟢 *ISLM Bot V6 AKTIF*\n\n"
-                "🧠 *AI Engine V6:*\n"
+                "🟢 *ISLM Bot V7 AKTIF*\n\n"
+                "🧠 *AI Engine V7:*\n"
                 "  • AI Genius + Memory\n"
-                "  • 13 Faktor Analisis\n"
-                "  • ML GradientBoosting\n"
+                "  • 🖼️ Analisa Gambar (kirim foto!)\n"
+                "  • 📱 Cek Nomor HP\n"
                 "  • Smart Price Alerts\n\n"
                 "📡 *Notifikasi:*\n"
-                "  • ⚡ 30 menit — Quick status\n"
-                "  • 📊 1 jam — Full analysis\n"
-                "  • 📅 Harian — Daily recap\n"
-                "  • 🚨 Alert otomatis — Naik/turun ±3%\n"
-                "  • ⚡ Mode Aktif — Saat market bergejolak\n\n"
-                "💬 Chat apa saja, AI paham bahasa lo!\n"
+                "  • ⚡ 30m / 📊 1h / 📅 Daily\n"
+                "  • 🚨 Alert ±3% / ⚡ Volatile Mode\n\n"
+                "💬 Chat / kirim gambar / /cek [nomor]\n"
                 "Ketik /menu untuk semua perintah."
             )
             self.send_1hour_update()
         else:
-            self.send_message("⚠️ *Bot V6 Started* (menunggu data...)")
+            self.send_message("⚠️ *Bot V7 Started* (menunggu data...)")
 
         now = time.time()
         self.last_30min = now
@@ -1209,8 +1431,16 @@ class StandaloneBot:
                             except: pass
                             self.send_message(self.handle_text_question(f"/{cb.get('data', '')}"))
                         elif 'message' in u:
-                            txt = u['message'].get('text', '')
-                            if txt:
+                            msg = u['message']
+                            # V7: Handle photos for image analysis
+                            if 'photo' in msg:
+                                safe_print(f"[PHOTO] Received image")
+                                caption = msg.get('caption', '')
+                                result = self.handle_photo(msg['photo'], caption)
+                                self.send_message(result)
+                            # Handle text messages
+                            elif msg.get('text'):
+                                txt = msg['text']
                                 safe_print(f"[MSG] {txt}")
                                 self.send_message(self.handle_text_question(txt))
 
