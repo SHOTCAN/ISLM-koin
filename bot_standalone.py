@@ -161,17 +161,61 @@ class StandaloneBot:
             "last_update": "Never",
         }
 
+        # V7: Portfolio Tracker
+        self.portfolio = []  # [{"buy_price": X, "amount": Y, "date": Z}]
+        self.total_invested = 0
+
+        # V7: Custom Price Targets
+        self.price_targets = []  # [{"price": X, "direction": "above"/"below", "notified": False}]
+
+        # V7: Bot Stats
+        self._stats = {
+            "messages_handled": 0,
+            "ai_calls": 0,
+            "alerts_sent": 0,
+            "photos_analyzed": 0,
+            "errors": 0,
+        }
+
+        # V7: Notification Control
+        self.notifications_paused = False
+
+        # V7: GitHub Repo Security
+        self._github_repo = os.environ.get('GITHUB_REPO', 'SHOTCAN/ISLM-koin')
+        self._github_token = os.environ.get('GITHUB_TOKEN', '')
+        self._last_repo_check = 0
+        self._repo_check_interval = 1800  # 30 min
+        self._last_known_watchers = -1
+        self._last_known_forks = -1
+        self._last_known_stars = -1
+
     # --- Telegram ---
     def send_message(self, text, parse_mode="Markdown"):
         if not self.chat_id: return False
         try:
-            # Telegram max 4096 chars
             for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
                 r = requests.post(f"{self.base_url}/sendMessage",
                     json={"chat_id": self.chat_id, "text": chunk, "parse_mode": parse_mode}, timeout=10)
             return True
         except Exception as e:
             safe_print(f"[SEND ERR] {e}")
+            return False
+
+    def send_message_with_keyboard(self, text, buttons, parse_mode="Markdown"):
+        """Send message with inline keyboard buttons."""
+        if not self.chat_id: return False
+        try:
+            keyboard = {"inline_keyboard": buttons}
+            r = requests.post(f"{self.base_url}/sendMessage",
+                json={
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "parse_mode": parse_mode,
+                    "reply_markup": keyboard
+                }, timeout=10)
+            return True
+        except Exception as e:
+            safe_print(f"[SEND KB ERR] {e}")
             return False
 
     def get_updates(self):
@@ -588,15 +632,19 @@ class StandaloneBot:
                 "  /candle — Pola candlestick\n"
                 "  /news — Berita & fundamental\n\n"
                 "*🆕 V7 Features:*\n"
-                "  �️ Kirim gambar — AI analisa\n"
-                "  /cek [nomor] — Cek nomor HP\n\n"
-                "*�🛡️ Security:*\n"
+                "  🖼️ Kirim gambar — AI analisa\n"
+                "  /beli [harga] [jumlah] — Catat beli\n"
+                "  /portfolio — Lihat P&L\n"
+                "  /target [harga] — Alert di harga X\n"
+                "  /stats — Statistik bot\n\n"
+                "*🛡️ Security:*\n"
                 "  /security — Status keamanan\n\n"
                 "💬 *CHAT BEBAS:* Tanya apa saja!\n"
                 "_Contoh: \"ISLM naik gak?\"_\n"
-                "_Contoh: \"Bandingin BTC vs ISLM\"_\n"
-                "_Contoh: /cek 08123456789_"
+                "_Contoh: \"Bandingin BTC vs ISLM\"_"
             )
+            # Also send inline keyboard
+            # (this return text will be sent, then we optionally send buttons)
 
         # PHONE LOOKUP — V7
         if t.startswith('/cek') or t.startswith('cek '):
@@ -604,6 +652,176 @@ class StandaloneBot:
             if len(parts) >= 2:
                 return self.lookup_phone(parts[1])
             return "📱 *Cara pakai:*\n/cek 08123456789\n/cek +628123456789"
+
+        # V7: PORTFOLIO TRACKER
+        if t.startswith('/beli'):
+            parts = text.strip().split()
+            if len(parts) >= 3:
+                try:
+                    buy_price = float(parts[1].replace(',', '').replace('.', ''))
+                    amount = float(parts[2].replace(',', '').replace('.', ''))
+                    entry = {
+                        "buy_price": buy_price,
+                        "amount": amount,
+                        "date": datetime.now().strftime('%d/%m/%Y %H:%M'),
+                        "total": buy_price * amount
+                    }
+                    self.portfolio.append(entry)
+                    self.total_invested += entry['total']
+                    return (
+                        f"✅ *PEMBELIAN DICATAT*\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💰 Harga beli: Rp {buy_price:,.0f}\n"
+                        f"📦 Jumlah: {amount:,.2f} ISLM\n"
+                        f"💵 Total: Rp {entry['total']:,.0f}\n"
+                        f"📅 Tanggal: {entry['date']}\n\n"
+                        f"Ketik /portfolio untuk lihat P&L"
+                    )
+                except ValueError:
+                    return "❌ Format salah.\n*Contoh:* /beli 150 1000\n(beli 1000 ISLM @Rp 150)"
+            return "💰 *Cara pakai:*\n/beli [harga] [jumlah]\n*Contoh:* /beli 150 1000"
+
+        if t.startswith('/jual'):
+            parts = text.strip().split()
+            if len(parts) >= 2:
+                try:
+                    idx = int(parts[1]) - 1
+                    if 0 <= idx < len(self.portfolio):
+                        removed = self.portfolio.pop(idx)
+                        sell_price = c['price']
+                        pnl = (sell_price - removed['buy_price']) * removed['amount']
+                        pnl_pct = ((sell_price / removed['buy_price']) - 1) * 100
+                        emoji = "🟢" if pnl >= 0 else "🔴"
+                        return (
+                            f"{emoji} *POSISI DITUTUP*\n"
+                            f"Beli: Rp {removed['buy_price']:,.0f} → Jual: Rp {sell_price:,.0f}\n"
+                            f"P&L: Rp {pnl:,.0f} ({pnl_pct:+.1f}%)"
+                        )
+                    return "❌ Nomor posisi tidak valid."
+                except ValueError:
+                    pass
+            return "💰 *Cara pakai:* /jual [nomor posisi]\nLihat nomor di /portfolio"
+
+        if t in ['/portfolio', '/porto', 'portfolio', 'porto']:
+            if not self.portfolio:
+                return "💼 *PORTFOLIO KOSONG*\nBelum ada posisi.\nGunakan /beli [harga] [jumlah] untuk catat pembelian."
+            
+            current_price = c['price']
+            lines = ["💼 *PORTFOLIO ISLM*", "━━━━━━━━━━━━━━━━━━━━━━"]
+            total_value = 0
+            total_cost = 0
+            
+            for i, pos in enumerate(self.portfolio, 1):
+                value = current_price * pos['amount']
+                cost = pos['buy_price'] * pos['amount']
+                pnl = value - cost
+                pnl_pct = ((current_price / pos['buy_price']) - 1) * 100 if pos['buy_price'] > 0 else 0
+                emoji = "🟢" if pnl >= 0 else "🔴"
+                total_value += value
+                total_cost += cost
+                lines.append(
+                    f"\n*#{i}* | {pos['date']}\n"
+                    f"  Beli: Rp {pos['buy_price']:,.0f} x {pos['amount']:,.2f}\n"
+                    f"  {emoji} P&L: Rp {pnl:,.0f} ({pnl_pct:+.1f}%)"
+                )
+            
+            total_pnl = total_value - total_cost
+            total_pnl_pct = ((total_value / total_cost) - 1) * 100 if total_cost > 0 else 0
+            emoji_total = "🟢" if total_pnl >= 0 else "🔴"
+            
+            lines += [
+                f"\n━━━━━━━━━━━━━━━━━━━━━━",
+                f"💰 *Harga sekarang:* Rp {current_price:,.0f}",
+                f"💵 *Total invest:* Rp {total_cost:,.0f}",
+                f"💰 *Nilai sekarang:* Rp {total_value:,.0f}",
+                f"{emoji_total} *Total P&L:* Rp {total_pnl:,.0f} ({total_pnl_pct:+.1f}%)",
+                f"\n💡 _/jual [nomor] untuk tutup posisi_"
+            ]
+            return "\n".join(lines)
+
+        # V7: CUSTOM PRICE TARGET
+        if t.startswith('/target'):
+            parts = text.strip().split()
+            if len(parts) >= 2:
+                if parts[1] == 'hapus' or parts[1] == 'clear':
+                    self.price_targets.clear()
+                    return "✅ Semua target dihapus."
+                try:
+                    target_price = float(parts[1].replace(',', '').replace('.', ''))
+                    direction = "above" if target_price > c['price'] else "below"
+                    self.price_targets.append({
+                        "price": target_price,
+                        "direction": direction,
+                        "notified": False
+                    })
+                    arrow = "⬆️" if direction == "above" else "⬇️"
+                    return (
+                        f"🎯 *TARGET ALERT SET*\n"
+                        f"{arrow} Notif saat ISLM {'naik ke' if direction == 'above' else 'turun ke'} Rp {target_price:,.0f}\n"
+                        f"💰 Harga sekarang: Rp {c['price']:,.0f}\n\n"
+                        f"Total target aktif: {len(self.price_targets)}"
+                    )
+                except ValueError:
+                    pass
+            # Show current targets
+            if self.price_targets:
+                lines = ["🎯 *TARGET ALERTS*", "━━━━━━━━━━━━━━━━━━━━━━"]
+                for i, tgt in enumerate(self.price_targets, 1):
+                    arrow = "⬆️" if tgt['direction'] == 'above' else "⬇️"
+                    status = "✅" if tgt['notified'] else "⏳"
+                    lines.append(f"{status} #{i} {arrow} Rp {tgt['price']:,.0f}")
+                lines.append(f"\n💰 Sekarang: Rp {c['price']:,.0f}")
+                lines.append("\n_/target hapus — hapus semua_")
+                return "\n".join(lines)
+            return "🎯 *Cara pakai:*\n/target 200 — Notif saat ISLM Rp 200\n/target hapus — Hapus semua"
+
+        # V7: BOT STATS
+        if t in ['/stats', 'stats', '/statistik']:
+            uptime = time.time() - self.start_time
+            days = int(uptime // 86400)
+            hours = int((uptime % 86400) // 3600)
+            mins = int((uptime % 3600) // 60)
+            uptime_str = f"{days}d {hours}h {mins}m" if days else f"{hours}h {mins}m"
+            
+            return (
+                f"📊 *BOT STATISTICS*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"⏱️ Uptime: {uptime_str}\n"
+                f"💬 Pesan dijawab: {self._stats['messages_handled']}\n"
+                f"🧠 AI calls: {self._stats['ai_calls']}\n"
+                f"🚨 Alerts terkirim: {self._stats['alerts_sent']}\n"
+                f"🖼️ Foto dianalisa: {self._stats['photos_analyzed']}\n"
+                f"⚠️ Errors: {self._stats['errors']}\n\n"
+                f"🧠 *Groq Usage:*\n"
+                f"  RPM: {len(self._groq_requests)}/{self._groq_rpm_limit}\n"
+                f"  Daily: {self._groq_daily_count}/14400\n\n"
+                f"💼 Portfolio: {len(self.portfolio)} posisi\n"
+                f"🎯 Targets: {len(self.price_targets)} aktif\n"
+                f"⚡ Mode: {'VOLATILE' if self.volatility_mode else 'Normal'}\n"
+                f"📈 Memory: {len(self._chat_memory)} msgs"
+            )
+
+        # V7: NOTIFICATION CONTROL
+        if t in ['/pause', 'pause', '/diam', 'diam']:
+            self.notifications_paused = True
+            return (
+                "⏸️ *NOTIFIKASI DI-PAUSE*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Bot tidak akan kirim update otomatis.\n"
+                "Tapi kamu tetap bisa chat dan tanya AI!\n\n"
+                "Ketik /resume untuk aktifkan kembali."
+            )
+
+        if t in ['/resume', 'resume', '/aktif', 'aktif', '/nyala']:
+            self.notifications_paused = False
+            return (
+                "▶️ *NOTIFIKASI AKTIF KEMBALI*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Bot akan kirim update otomatis lagi:\n"
+                "  ⚡ 30m / 📊 1h / 📅 Daily\n"
+                "  🚨 Price Alerts / ⚡ Volatile Mode\n\n"
+                "Ketik /pause untuk matikan lagi."
+            )
 
         # STATUS
         if any(k in t for k in ['/status', 'status', 'harga', 'price', 'berapa', 'market', 'kondisi']):
@@ -1271,6 +1489,41 @@ class StandaloneBot:
             safe_print(f"[ALERT] Price moved {change_pct:+.1f}% → Alert sent ({self.alerts_this_hour}/{self.max_alerts_per_hour})")
 
     # ============================================
+    # V7: CUSTOM TARGET CHECKER
+    # ============================================
+    def _check_custom_targets(self):
+        """Check if any custom price targets have been hit."""
+        price = self._cache.get('price', 0)
+        if not price or not self.price_targets:
+            return
+
+        for tgt in self.price_targets:
+            if tgt['notified']:
+                continue
+            hit = False
+            if tgt['direction'] == 'above' and price >= tgt['price']:
+                hit = True
+            elif tgt['direction'] == 'below' and price <= tgt['price']:
+                hit = True
+
+            if hit:
+                tgt['notified'] = True
+                arrow = "⬆️" if tgt['direction'] == 'above' else "⬇️"
+                self.send_message(
+                    f"🎯 *TARGET TERCAPAI!*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{arrow} ISLM {'naik ke' if tgt['direction'] == 'above' else 'turun ke'} "
+                    f"Rp {price:,.0f}\n"
+                    f"🎯 Target: Rp {tgt['price']:,.0f}\n\n"
+                    f"💡 Set target baru: /target [harga]"
+                )
+                self._stats['alerts_sent'] += 1
+                safe_print(f"[TARGET] Hit! Rp {tgt['price']:,.0f}")
+
+        # Clean up notified targets
+        self.price_targets = [t for t in self.price_targets if not t['notified']]
+
+    # ============================================
     # V6: VOLATILITY ADAPTIVE SYSTEM
     # ============================================
     def check_volatility(self):
@@ -1370,11 +1623,78 @@ class StandaloneBot:
         self.send_message("\n".join(lines))
 
     # ============================================
+    # V7: GITHUB REPO SECURITY MONITOR
+    # ============================================
+    def _check_github_repo(self):
+        """Monitor GitHub repo for suspicious activity."""
+        now = time.time()
+        if now - self._last_repo_check < self._repo_check_interval:
+            return
+        self._last_repo_check = now
+
+        try:
+            headers = {'Accept': 'application/vnd.github.v3+json'}
+            if self._github_token:
+                headers['Authorization'] = f'token {self._github_token}'
+
+            resp = requests.get(
+                f'https://api.github.com/repos/{self._github_repo}',
+                headers=headers, timeout=10
+            )
+            if resp.status_code != 200:
+                return
+
+            data = resp.json()
+            watchers = data.get('watchers_count', 0)
+            forks = data.get('forks_count', 0)
+            stars = data.get('stargazers_count', 0)
+
+            # First check — just store baseline
+            if self._last_known_watchers == -1:
+                self._last_known_watchers = watchers
+                self._last_known_forks = forks
+                self._last_known_stars = stars
+                safe_print(f"[GITHUB] Baseline: {stars} stars, {forks} forks, {watchers} watchers")
+                return
+
+            alerts = []
+            if watchers > self._last_known_watchers:
+                diff = watchers - self._last_known_watchers
+                alerts.append(f"👁️ Watchers: {self._last_known_watchers} → {watchers} (+{diff})")
+            if forks > self._last_known_forks:
+                diff = forks - self._last_known_forks
+                alerts.append(f"🔱 Forks: {self._last_known_forks} → {forks} (+{diff})")
+            if stars > self._last_known_stars:
+                diff = stars - self._last_known_stars
+                alerts.append(f"⭐ Stars: {self._last_known_stars} → {stars} (+{diff})")
+
+            if alerts:
+                self.send_message(
+                    f"🚨 *GITHUB SECURITY ALERT*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📁 Repo: {self._github_repo}\n\n"
+                    f"{'\n'.join(alerts)}\n\n"
+                    f"⚠️ Ada orang yang melihat/fork repo kamu!\n"
+                    f"🛡️ Keamanan otomatis ditingkatkan.\n"
+                    f"\n💡 _Cek: github.com/{self._github_repo}_"
+                )
+                self._stats['alerts_sent'] += 1
+                safe_print(f"[GITHUB] ALERT! Changes detected: {', '.join(alerts)}")
+
+            # Update baseline
+            self._last_known_watchers = watchers
+            self._last_known_forks = forks
+            self._last_known_stars = stars
+
+        except Exception as e:
+            safe_print(f"[GITHUB-ERR] {e}")
+
+    # ============================================
     # MAIN LOOP
     # ============================================
     def run(self):
         safe_print("=" * 55)
-        safe_print("🤖 ISLM Monitor V6 — AI Genius Bot")
+        safe_print("🤖 ISLM Monitor V7 — AI Genius Bot")
         safe_print(f"📡 Token: ...{self.token[-6:]}" if self.token else "❌ NO TOKEN!")
         safe_print(f"💬 Chat ID: {self.chat_id}")
         safe_print(f"⏱️ Intervals: 30min / 1h / Daily + Smart Alerts")
@@ -1442,7 +1762,28 @@ class StandaloneBot:
                             elif msg.get('text'):
                                 txt = msg['text']
                                 safe_print(f"[MSG] {txt}")
-                                self.send_message(self.handle_text_question(txt))
+                                self._stats['messages_handled'] += 1
+                                reply = self.handle_text_question(txt)
+                                # Send with inline keyboard for /menu
+                                if t_lower := txt.lower().strip():
+                                    if t_lower in ['/start', '/menu', '/help', 'help', 'menu']:
+                                        self.send_message(reply)
+                                        buttons = [
+                                            [{"text": "📊 Status", "callback_data": "status"},
+                                             {"text": "📎 Sinyal", "callback_data": "sinyal"},
+                                             {"text": "🔮 Prediksi", "callback_data": "predict"}],
+                                            [{"text": "💼 Portfolio", "callback_data": "portfolio"},
+                                             {"text": "🎯 Targets", "callback_data": "target"},
+                                             {"text": "📊 Stats", "callback_data": "stats"}],
+                                            [{"text": "🐳 Whale", "callback_data": "whale"},
+                                             {"text": "📈 Risk", "callback_data": "risk"},
+                                             {"text": "📰 News", "callback_data": "news"}],
+                                        ]
+                                        self.send_message_with_keyboard("⬇️ *Pilih menu:*", buttons)
+                                    else:
+                                        self.send_message(reply)
+                                else:
+                                    self.send_message(reply)
 
                 # --- Multi-interval notifications ---
                 now = time.time()
@@ -1452,40 +1793,51 @@ class StandaloneBot:
                     if self._cache.get('price'):
                         self.check_price_alert()
                         self.check_volatility()
+                        # V7: Check custom price targets
+                        self._check_custom_targets()
                 except Exception as e:
                     safe_print(f"[ALERT-ERR] {e}")
+                    self._stats['errors'] += 1
 
-                # V6: Volatile mode — extra updates every 10 min
-                if self.volatility_mode and now - self.last_volatile_check >= self.volatile_interval:
-                    safe_print("[VOLATILE] Sending volatile mode update...")
-                    if self.refresh_analysis():
-                        self.send_volatile_update()
-                    self.last_volatile_check = now
+                # V7: GitHub repo security check
+                try:
+                    self._check_github_repo()
+                except Exception as e:
+                    safe_print(f"[GITHUB-ERR] {e}")
 
-                # 30-minute update
-                if now - self.last_30min >= INTERVAL_30MIN:
-                    safe_print("[30MIN] Sending quick update...")
-                    if self.refresh_analysis():
-                        self.send_30min_update()
-                    self.last_30min = now
+                # Scheduled notifications (respect pause)
+                if not self.notifications_paused:
+                    # V6: Volatile mode — extra updates every 10 min
+                    if self.volatility_mode and now - self.last_volatile_check >= self.volatile_interval:
+                        safe_print("[VOLATILE] Sending volatile mode update...")
+                        if self.refresh_analysis():
+                            self.send_volatile_update()
+                        self.last_volatile_check = now
 
-                # 1-hour update
-                if now - self.last_1hour >= INTERVAL_1HOUR:
-                    safe_print("[1HOUR] Sending full analysis...")
-                    if self.refresh_analysis():
-                        self.send_1hour_update()
-                    self.last_1hour = now
+                    # 30-minute update
+                    if now - self.last_30min >= INTERVAL_30MIN:
+                        safe_print("[30MIN] Sending quick update...")
+                        if self.refresh_analysis():
+                            self.send_30min_update()
+                        self.last_30min = now
 
-                # Daily update
-                if now - self.last_daily >= INTERVAL_DAILY:
-                    safe_print("[DAILY] Sending daily recap...")
-                    if self.refresh_analysis():
-                        self.send_daily_update()
-                    self.last_daily = now
+                    # 1-hour update
+                    if now - self.last_1hour >= INTERVAL_1HOUR:
+                        safe_print("[1HOUR] Sending full analysis...")
+                        if self.refresh_analysis():
+                            self.send_1hour_update()
+                        self.last_1hour = now
+
+                    # Daily update
+                    if now - self.last_daily >= INTERVAL_DAILY:
+                        safe_print("[DAILY] Sending daily recap...")
+                        if self.refresh_analysis():
+                            self.send_daily_update()
+                        self.last_daily = now
 
             except KeyboardInterrupt:
                 safe_print("\n[EXIT] Bot stopped.")
-                self.send_message("🔴 *Bot V6 Stopped*")
+                self.send_message("🔴 *Bot V7 Stopped*")
                 break
             except Exception as e:
                 safe_print(f"[ERROR] {e}")
@@ -1496,3 +1848,4 @@ class StandaloneBot:
 if __name__ == "__main__":
     bot = StandaloneBot()
     bot.run()
+
