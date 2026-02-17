@@ -147,6 +147,23 @@ class StandaloneBot:
         self._groq_daily_count = 0
         self._groq_daily_reset = time.time()
 
+        # V7+: Multi-Key Rotation
+        self._groq_keys = []
+        for i in range(1, 6):
+            key = os.environ.get(f'GROQ_API_KEY_{i}', '')
+            if key:
+                self._groq_keys.append(key)
+        # Fallback to single key
+        if not self._groq_keys:
+            fallback = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
+            if not fallback:
+                fallback = os.environ.get('GROQ_API_KEY', '')
+            if fallback:
+                self._groq_keys.append(fallback)
+        self._current_key_idx = 0
+        self._key_errors = {}  # {idx: last_error_time}
+        safe_print(f"[AI] Loaded {len(self._groq_keys)} Groq API key(s)")
+
         # AI cache
         self._cache = {
             "price": 0, "rsi": 50, "macd_val": 0, "hist": 0, "sig_line": 0,
@@ -1022,14 +1039,33 @@ class StandaloneBot:
         return self._ask_groq_ai(text)
 
     # ============================================
-    # GROQ AI V6 — Genius Mode + Memory + Chain-of-Thought
+    # GROQ AI V7 — Multi-Key + Genius Mode + Memory
     # ============================================
+    def _get_groq_client(self):
+        """Get Groq client with auto-rotation across multiple API keys."""
+        if not self._groq_keys:
+            return None, -1
+        from groq import Groq
+        now = time.time()
+        for attempt in range(len(self._groq_keys)):
+            idx = (self._current_key_idx + attempt) % len(self._groq_keys)
+            last_err = self._key_errors.get(idx, 0)
+            if now - last_err < 60 and attempt < len(self._groq_keys) - 1:
+                continue
+            self._current_key_idx = idx
+            return Groq(api_key=self._groq_keys[idx]), idx
+        self._current_key_idx = 0
+        return Groq(api_key=self._groq_keys[0]), 0
+
+    def _rotate_key(self, failed_idx):
+        """Mark a key as failed and rotate to next."""
+        self._key_errors[failed_idx] = time.time()
+        self._current_key_idx = (failed_idx + 1) % len(self._groq_keys)
+        safe_print(f"[AI] Key #{failed_idx+1} rate-limited → switching to Key #{self._current_key_idx+1}")
+
     def _ask_groq_ai(self, user_message):
         """Send user message to Groq AI with full market context, memory, and genius-level understanding."""
-        api_key = Config.GROQ_API_KEY if hasattr(Config, 'GROQ_API_KEY') else ''
-        if not api_key:
-            api_key = os.environ.get('GROQ_API_KEY', '')
-        if not api_key:
+        if not self._groq_keys:
             return (
                 "🤖 Coba ketik:\n"
                 "/status — Market\n/predict — Prediksi\n/analisa — Teknikal\n"
@@ -1037,9 +1073,8 @@ class StandaloneBot:
                 "/whale — Whale\n/news — Berita\n/candle — Pola"
             )
         try:
-            from groq import Groq
             from backend.core_logic import BTCCorrelation, RiskMetrics
-            client = Groq(api_key=api_key)
+            client, key_idx = self._get_groq_client()
             c = self._cache
             sig = c["ai_signal"]
             ml = c["ml_result"]
@@ -1117,9 +1152,18 @@ class StandaloneBot:
             market_context = "\n".join(context_lines)
 
             # === V6: GENIUS SYSTEM PROMPT ===
+            now_dt = datetime.now()
             system_prompt = (
                 "Kamu adalah ISLM AI — asisten trading super pintar yang bisa memahami KONTEKS dan MAKSUD user "
                 "dengan sangat baik, bahkan jika pertanyaan mereka ambigu, singkat, atau menggunakan bahasa gaul.\n\n"
+
+                f"=== WAKTU & FAKTA TERKINI ===\n"
+                f"Sekarang: {now_dt.strftime('%A, %d %B %Y')} jam {now_dt.strftime('%H:%M')} WIB\n"
+                f"Tahun: {now_dt.year}\n"
+                f"Presiden Indonesia: Prabowo Subianto (dilantik 20 Oktober 2024)\n"
+                f"Wakil Presiden: Gibran Rakabuming Raka\n"
+                f"Mata uang crypto halal: ISLM (Islamic Coin), diatur oleh HAQQ Network\n"
+                f"PENTING: Kamu hidup di tahun {now_dt.year}. Jangan gunakan data lama!\n\n"
 
                 "=== CARA BERPIKIR (CHAIN-OF-THOUGHT) ===\n"
                 "Sebelum menjawab, SELALU lakukan ini di dalam pikiranmu:\n"
@@ -1147,16 +1191,22 @@ class StandaloneBot:
                 "- JANGAN pernah jawab 'saya tidak mengerti' — selalu coba interpretasi\n"
                 "- Jawab FOKUS dan RELEVAN, jangan bertele-tele\n\n"
 
+                "=== PENGETAHUAN UMUM ===\n"
+                "- Kamu JUGA bisa menjawab pertanyaan di luar crypto\n"
+                "- Politik Indonesia, berita terkini, pengetahuan umum, matematika, dll\n"
+                "- SELALU jawab berdasarkan fakta terkini (tahun " + str(now_dt.year) + ")\n"
+                "- Jangan bilang 'saya tidak tahu' — berikan jawaban terbaikmu\n\n"
+
                 "=== GAYA JAWABAN PER TIPE ===\n"
-                "📊 ANALITIS (harga, prediksi, teknikal):\n"
+                "\U0001f4ca ANALITIS (harga, prediksi, teknikal):\n"
                 "  → Langsung kasih data + angka + rekomendasi aksi\n"
                 "  → Format: Kondisi → Analisa → Aksi yang disarankan\n\n"
-                "💭 EMOSIONAL (curhat, galau, takut, senang):\n"
+                "\U0001f4ad EMOSIONAL (curhat, galau, takut, senang):\n"
                 "  → Empati dulu → Validasi perasaan → Saran praktis\n"
                 "  → Gunakan bahasa hangat dan supportif\n\n"
-                "⚖️ KOMPARATIF (bandingkan coin, strategi):\n"
+                "\u2696\ufe0f KOMPARATIF (bandingkan coin, strategi):\n"
                 "  → Tabel perbandingan → Pro/Kontra → Rekomendasi\n\n"
-                "📚 EDUKASI (apa itu RSI, cara trading, dll):\n"
+                "\U0001f4da EDUKASI (apa itu RSI, cara trading, dll):\n"
                 "  → Jelaskan sederhana → Contoh nyata dengan data ISLM\n\n"
 
                 "=== KEMAMPUAN ===\n"
@@ -1166,7 +1216,8 @@ class StandaloneBot:
                 "- Multi-coin analysis (BTC, ETH, SOL, dll di Indodax)\n"
                 "- Edukasi trading dan crypto\n"
                 "- Emotional support dan motivasi\n"
-                "- Menjawab follow-up questions dengan konteks percakapan sebelumnya\n\n"
+                "- Menjawab follow-up questions dengan konteks percakapan sebelumnya\n"
+                "- Pengetahuan umum, politik, matematika, sains\n\n"
 
                 f"=== DATA REAL-TIME ===\n{market_context}\n\n"
 
@@ -1178,7 +1229,7 @@ class StandaloneBot:
                 "- Format rapi: bullet points singkat, bold untuk angka penting\n"
                 "- Bahasa Indonesia natural dan santai\n"
                 "- Akhiri dengan 1 kalimat actionable insight\n"
-                "- Jika user tanya di luar crypto, jawab singkat lalu kaitkan ke investasi\n"
+                "- Jika user tanya di luar crypto, jawab dengan pengetahuan terkini!\n"
                 "- INGAT: SINGKAT = BAGUS. Panjang = SPAM. User sudah komplain soal ini!"
             )
 
@@ -1213,6 +1264,7 @@ class StandaloneBot:
             )
             self._groq_requests.append(time.time())
             self._groq_daily_count += 1
+            self._stats['ai_calls'] += 1
             ai_reply = response.choices[0].message.content
 
             # Save to memory
@@ -1226,9 +1278,18 @@ class StandaloneBot:
 
             return ai_reply
         except Exception as e:
-            safe_print(f"[Groq Error] {e}")
+            err_str = str(e)
+            safe_print(f"[Groq Error] Key #{key_idx+1}: {err_str[:80]}")
+            self._stats['errors'] += 1
+
+            # Rate limit or model error → rotate to next key
+            if 'rate_limit' in err_str.lower() or '429' in err_str or 'limit' in err_str.lower():
+                self._rotate_key(key_idx)
+                if len(self._groq_keys) > 1:
+                    return self._ask_groq_ai(user_message)
+
             return (
-                f"🤖 AI sedang sibuk. Gunakan perintah:\n"
+                f"🤖 AI sedang sibuk (Key #{key_idx+1}). Gunakan perintah:\n"
                 "/status — Market\n/predict — Prediksi\n/sinyal — Sinyal AI"
             )
 
@@ -1267,12 +1328,9 @@ class StandaloneBot:
             mime = f"image/{'jpeg' if ext in ('jpg', 'jpeg') else ext}"
 
             # Send to Groq Vision
-            api_key = Config.GROQ_API_KEY or os.environ.get('GROQ_API_KEY', '')
-            if not api_key:
+            client, key_idx = self._get_groq_client()
+            if not client:
                 return "❌ AI Vision tidak tersedia (API key missing)."
-
-            from groq import Groq
-            client = Groq(api_key=api_key)
 
             # Rate limit check
             now_ts = time.time()
@@ -1282,16 +1340,18 @@ class StandaloneBot:
                 return f"⏳ AI Vision istirahat {wait_time} detik. Coba lagi ya!"
 
             user_prompt = caption if caption else "Analisa gambar ini secara detail. Jelaskan apa yang kamu lihat."
+            now_dt = datetime.now()
 
             response = client.chat.completions.create(
-                model="llama-3.2-90b-vision-preview",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[
                     {"role": "system", "content":
-                        "Kamu AI analyst yang bisa menganalisa gambar. "
-                        "Kemampuanmu: analisa chart/grafik trading, soal matematika, "
-                        "pengenalan objek, pengetahuan umum, membaca teks di gambar. "
-                        "Jawab dalam Bahasa Indonesia yang santai tapi informatif. "
-                        "JAWAB SINGKAT DAN PADAT, maksimal 3-4 paragraf."
+                        f"Kamu AI analyst yang bisa menganalisa gambar. "
+                        f"Sekarang tanggal {now_dt.strftime('%d %B %Y')}, jam {now_dt.strftime('%H:%M')} WIB. "
+                        f"Kemampuanmu: analisa chart/grafik trading, soal matematika, "
+                        f"pengenalan objek, pengetahuan umum, membaca teks di gambar. "
+                        f"Jawab dalam Bahasa Indonesia yang santai tapi informatif. "
+                        f"JAWAB SINGKAT DAN PADAT, maksimal 3-4 paragraf."
                     },
                     {"role": "user", "content": [
                         {"type": "text", "text": user_prompt},
@@ -1305,13 +1365,23 @@ class StandaloneBot:
             )
             self._groq_requests.append(time.time())
             self._groq_daily_count += 1
+            self._stats['photos_analyzed'] += 1
 
             result = response.choices[0].message.content
             return f"🖼️ *ANALISA GAMBAR*\n━━━━━━━━━━━━━━━━━━━━━━\n\n{result}"
 
         except Exception as e:
-            safe_print(f"[VISION Error] {e}")
-            return f"❌ Gagal analisa gambar: {str(e)[:100]}"
+            err_str = str(e)
+            safe_print(f"[VISION Error] {err_str[:100]}")
+            self._stats['errors'] += 1
+
+            # Rate limit → rotate key
+            if 'rate_limit' in err_str.lower() or '429' in err_str:
+                self._rotate_key(key_idx)
+                if len(self._groq_keys) > 1:
+                    return self.handle_photo(photo_list, caption)
+
+            return f"❌ Gagal analisa gambar: {err_str[:100]}"
 
     # ============================================
     # V7: PHONE NUMBER LOOKUP
