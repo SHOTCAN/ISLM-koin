@@ -1787,6 +1787,64 @@ class StandaloneBot:
             self._last_known_forks = forks
             self._last_known_stars = stars
 
+            # V7+ SECURITY: Check for Pull Requests
+            try:
+                pr_resp = requests.get(
+                    f'https://api.github.com/repos/{self._github_repo}/pulls?state=open',
+                    headers=headers, timeout=10
+                )
+                if pr_resp.status_code == 200:
+                    prs = pr_resp.json()
+                    if not hasattr(self, '_known_prs'):
+                        self._known_prs = set()
+                    for pr in prs:
+                        pr_id = pr.get('number', 0)
+                        if pr_id not in self._known_prs:
+                            self._known_prs.add(pr_id)
+                            pr_user = pr.get('user', {}).get('login', 'unknown')
+                            pr_title = pr.get('title', 'N/A')
+                            # changed = f"+{pr.get('additions', '?')}/-{pr.get('deletions', '?')}" # Not used in message
+                            self.send_message(
+                                f"🚨 *PULL REQUEST ALERT!*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📁 Repo: {self._github_repo}\n"
+                                f"📝 PR #{pr_id}: {pr_title}\n"
+                                f"👤 Dari: *{pr_user}*\n\n"
+                                f"⚠️ JANGAN MERGE tanpa review!\n"
+                                f"🛡️ Bisa jadi usaha inject code berbahaya.\n\n"
+                                f"💡 _Cek: github.com/{self._github_repo}/pull/{pr_id}_"
+                            )
+                            self._stats['alerts_sent'] += 1
+            except Exception as e:
+                safe_print(f"[GITHUB-PR-ERR] {e}")
+
+            # V7+ SECURITY: Check fork details
+            try:
+                forks_resp = requests.get(
+                    f'https://api.github.com/repos/{self._github_repo}/forks?sort=newest&per_page=5',
+                    headers=headers, timeout=10
+                )
+                if forks_resp.status_code == 200:
+                    if not hasattr(self, '_known_forks'):
+                        self._known_forks = set()
+                    for fork in forks_resp.json():
+                        fork_user = fork.get('owner', {}).get('login', 'unknown')
+                        if fork_user not in self._known_forks:
+                            self._known_forks.add(fork_user)
+                            fork_url = fork.get('html_url', '')
+                            self.send_message(
+                                f"🔱 *FORK DETECTED!*\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"👤 User: *{fork_user}*\n"
+                                f"📁 Fork: {fork_url}\n\n"
+                                f"⚠️ Orang ini bisa lihat source code kamu.\n"
+                                f"🛡️ Pastikan TIDAK ada secrets di repo!\n"
+                                f"✅ .env kamu sudah aman (di .gitignore)."
+                            )
+                            self._stats['alerts_sent'] += 1
+            except Exception as e:
+                safe_print(f"[GITHUB-FORK-ERR] {e}")
+
         except Exception as e:
             safe_print(f"[GITHUB-ERR] {e}")
 
@@ -1853,6 +1911,36 @@ class StandaloneBot:
                             self.send_message(self.handle_text_question(f"/{cb.get('data', '')}"))
                         elif 'message' in u:
                             msg = u['message']
+                            # V7+ SECURITY: Chat ID Authentication Guard
+                            sender_id = str(msg.get('chat', {}).get('id', ''))
+                            if sender_id != str(self.chat_id):
+                                sender_name = msg.get('from', {}).get('first_name', 'Unknown')
+                                sender_user = msg.get('from', {}).get('username', 'N/A')
+                                safe_print(f"[SECURITY] ⛔ Unauthorized access from {sender_name} (@{sender_user}, ID:{sender_id})")
+                                self._stats['errors'] += 1
+                                if not hasattr(self, '_unauthorized_attempts'):
+                                    self._unauthorized_attempts = 0
+                                self._unauthorized_attempts += 1
+                                try:
+                                    requests.post(f"{self.base_url}/sendMessage",
+                                        json={'chat_id': sender_id,
+                                              'text': '⛔ Akses ditolak. Bot ini privat.',
+                                              'parse_mode': 'Markdown'}, timeout=5)
+                                except: pass
+                                # Alert owner about unauthorized access
+                                if self._unauthorized_attempts <= 5:  # Don't spam owner
+                                    self.send_message(
+                                        f"🚨 *SECURITY ALERT*\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"⛔ Ada orang coba akses bot!\n\n"
+                                        f"👤 Nama: {sender_name}\n"
+                                        f"📱 Username: @{sender_user}\n"
+                                        f"🆔 Chat ID: `{sender_id}`\n"
+                                        f"💬 Pesan: _{msg.get('text', '[foto/media]')[:50]}_\n\n"
+                                        f"🛡️ Akses DITOLAK otomatis.\n"
+                                        f"Total percobaan: {self._unauthorized_attempts}x"
+                                    )
+                                continue
                             # V7: Handle photos for image analysis
                             if 'photo' in msg:
                                 safe_print(f"[PHOTO] Received image")
