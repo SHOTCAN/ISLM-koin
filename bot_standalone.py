@@ -48,6 +48,12 @@ from backend.core_logic import (
 )
 from backend.security_engine import SecurityEngine
 
+# V8: Institutional-Grade Engines
+from backend.multi_tf_engine import MultiTimeframeEngine, MarketSessionDetector
+from backend.news_sentiment import NewsSentimentEngine
+from backend.adaptive_engine import SignalTracker, ManipulationDetector, EmotionFilter, ModelVersionTracker
+from backend.risk_manager import RiskManager
+
 import requests
 
 
@@ -117,6 +123,19 @@ class StandaloneBot:
         self.last_1hour = 0
         self.last_daily = 0
         self.start_time = time.time()
+
+        # V8: Institutional Engines
+        self.sentiment_engine = NewsSentimentEngine()
+        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+        self.signal_tracker = SignalTracker(data_dir=data_dir)
+        self.model_tracker = ModelVersionTracker(data_dir=data_dir)
+        self._last_btc_report = 0
+        self._btc_report_interval = 86400 * 2  # Every 2 days
+        self._last_signal_eval = 0
+        self._signal_eval_interval = 3600  # Auto-evaluate every hour
+        self._last_sentiment_check = 0
+        self._sentiment_interval = 1800  # Sentiment refresh every 30 min
+        self._v8_cache = {}  # Multi-TF + sentiment + manipulation data
 
         # Price history for daily recap
         self.price_history = []
@@ -358,6 +377,106 @@ class StandaloneBot:
             price_list = [c['close'] for c in candles[-100:]]
             predictions = MarketProjector.predict_multi_horizon(price, price_list)
 
+            # ===== V8: INSTITUTIONAL ANALYSIS =====
+            try:
+                # Multi-Timeframe Analysis
+                tf_results = {}
+                for tf_key, tf_cfg in MultiTimeframeEngine.TIMEFRAMES.items():
+                    try:
+                        tf_candles = self.api.get_kline(PAIR, tf_key)
+                        if tf_candles and len(tf_candles) >= tf_cfg['min_candles']:
+                            tf_results[tf_key] = MultiTimeframeEngine.analyze_single_tf(tf_candles, tf_cfg['label'])
+                    except:
+                        pass
+
+                # Regime detection
+                candles_1d = self.api.get_kline(PAIR, '1D')
+                regime = MultiTimeframeEngine.detect_regime(candles_1d)
+
+                # Weighted multi-TF score
+                multi_tf_score = MultiTimeframeEngine.weighted_multi_tf_score(tf_results, regime)
+
+                # Volatility regime
+                vol_regime = MultiTimeframeEngine.volatility_regime(candles)
+
+                # Volume profile
+                vol_profile = MultiTimeframeEngine.volume_profile(candles)
+
+                # Fibonacci levels
+                fib_levels = MultiTimeframeEngine.fibonacci_auto(candles)
+
+                # Market session
+                session = MarketSessionDetector.get_current_session()
+
+                # Probabilistic scenarios
+                scenarios = MultiTimeframeEngine.probabilistic_scenarios(candles, tf_results)
+
+                # Order book analysis
+                depth_analysis = self.api.get_depth_analysis(PAIR)
+
+                # Market structure
+                structure = MultiTimeframeEngine.detect_market_structure(candles)
+
+                # Manipulation scan
+                volumes_list = [c.get('vol', 0) for c in candles]
+                manip_scan = ManipulationDetector.full_scan(price_list, volumes_list)
+
+                # Emotion filter
+                bb_width = None
+                if bb_upper and bb_lower and bb_mid and bb_mid > 0:
+                    bb_width = (bb_upper - bb_lower) / bb_mid * 100
+                emotion = EmotionFilter.should_filter(
+                    vol_regime.get('regime', 'NORMAL'), rsi, hist, bb_width
+                )
+
+                # Drawdown control
+                should_pause, pause_reason = self.signal_tracker.should_pause_signals()
+
+                # Risk management trade plan
+                s_level = supports[0] if supports else price * 0.97
+                r_level = resistances[0] if resistances else price * 1.03
+                trade_plan = RiskManager.generate_trade_plan(
+                    price=price, support=s_level, resistance=r_level,
+                    atr=atr, structure_trend=structure.get('structure_trend', 'UNKNOWN'),
+                    rsi=rsi, signal_label=ai_signal.get('label', 'HOLD'),
+                    confidence=ai_signal.get('confidence', 0),
+                    winrate_data=self.signal_tracker.get_winrate('24H', 30),
+                )
+
+                # Store V8 data
+                self._v8_cache = {
+                    'tf_results': tf_results,
+                    'multi_tf_score': multi_tf_score,
+                    'regime': regime,
+                    'vol_regime': vol_regime,
+                    'vol_profile': vol_profile,
+                    'fib_levels': fib_levels,
+                    'session': session,
+                    'scenarios': scenarios,
+                    'depth_analysis': depth_analysis,
+                    'structure': structure,
+                    'manip_scan': manip_scan,
+                    'emotion_filter': emotion,
+                    'should_pause': should_pause,
+                    'pause_reason': pause_reason,
+                    'trade_plan': trade_plan,
+                }
+
+                # Record signal in tracker
+                if ai_signal.get('label') and ai_signal['label'] != 'HOLD':
+                    direction = 'BUY' if 'BUY' in ai_signal['label'].upper() else 'SELL'
+                    self.signal_tracker.record_signal(
+                        signal_type='AI_V8', direction=direction,
+                        price=price, confidence=ai_signal.get('confidence', 0),
+                        factors={'rsi': rsi, 'regime': regime, 'multi_tf': multi_tf_score.get('consensus', 'N/A')}
+                    )
+
+                safe_print(f"  [V8] TF:{multi_tf_score.get('consensus','?')} | Regime:{regime} | Vol:{vol_regime.get('regime','?')} | Manip:{manip_scan.get('manipulation_risk','?')}")
+
+            except Exception as e:
+                safe_print(f"[V8-WARN] {e}")
+                self._v8_cache = {}
+
             # Update cache
             self._cache.update({
                 "price": price, "rsi": rsi, "macd_val": macd_val, "hist": hist, "sig_line": sig_line,
@@ -372,7 +491,7 @@ class StandaloneBot:
                 "last_update": datetime.now().strftime('%H:%M:%S'),
             })
 
-            safe_print(f"[OK] V4 Analysis | Rp {price:,.0f} | {ai_signal['label']} | ML: {ml_result.get('ml_signal', 'N/A')}")
+            safe_print(f"[OK] V8 Analysis | Rp {price:,.0f} | {ai_signal['label']} | ML: {ml_result.get('ml_signal', 'N/A')}")
             return True
 
         except Exception as e:
@@ -661,43 +780,84 @@ class StandaloneBot:
         # /start /menu /help
         if t in ['/start', '/menu', '/help', 'help', 'bantuan', 'menu']:
             return (
-                "🤖 *ISLM AI V7 — MENU*\n\n"
-                "*📊 Market:*\n"
-                "  /status — Kondisi market\n"
-                "  /predict — Prediksi harga\n"
-                "  /analisa — Teknikal lengkap\n"
-                "  /sinyal — Sinyal AI\n"
-                "  /ml — Sinyal ML\n\n"
-                "*🪙 Multi-Coin:*\n"
-                "  /coin — Top coins Indodax\n"
-                "  /coin btc — Harga BTC\n\n"
-                "*📈 Advanced:*\n"
-                "  /risk — Sharpe, MaxDD, WinRate\n"
-                "  /level — Support & Resistance\n"
-                "  /whale — Whale tracker\n"
-                "  /candle — Pola candlestick\n"
-                "  /news — Berita & fundamental\n\n"
-                "*🆕 V7 Features:*\n"
-                "  🖼️ Kirim gambar — AI analisa\n"
-                "  /beli [harga] [jumlah] — Catat beli\n"
-                "  /portfolio — Lihat P&L\n"
-                "  /target [harga] — Alert di harga X\n"
-                "  /stats — Statistik bot\n\n"
-                "*🛡️ Security:*\n"
-                "  /security — Status keamanan\n\n"
-                "💬 *CHAT BEBAS:* Tanya apa saja!\n"
-                "_Contoh: \"ISLM naik gak?\"_\n"
-                "_Contoh: \"Bandingin BTC vs ISLM\"_"
+                "\U0001f916 *ISLM AI V8 \u2014 INSTITUTIONAL ENGINE*\n\n"
+                "*\U0001f4ca Market:*\n"
+                "  /status \u2014 Kondisi market\n"
+                "  /predict \u2014 Prediksi harga\n"
+                "  /analisa \u2014 Teknikal lengkap\n"
+                "  /sinyal \u2014 Sinyal AI\n"
+                "  /ml \u2014 Sinyal ML\n\n"
+                "*\U0001f4c8 V8 Institutional:*\n"
+                "  /tf \u2014 Multi-Timeframe (7 TF)\n"
+                "  /depth \u2014 Order book depth + walls\n"
+                "  /spread \u2014 Bid/Ask spread\n"
+                "  /sentiment \u2014 Market sentiment score\n"
+                "  /btc \u2014 BTC macro analysis\n"
+                "  /korelasi \u2014 Correlation matrix\n"
+                "  /manipulasi \u2014 Manipulation scan\n"
+                "  /plan \u2014 Full trade plan\n"
+                "  /winrate \u2014 Signal performance\n"
+                "  /health \u2014 API health + data quality\n\n"
+                "*\U0001fa99 Multi-Coin:*\n"
+                "  /coin \u2014 Top coins Indodax\n"
+                "  /coin btc \u2014 Harga BTC\n\n"
+                "*\U0001f4c8 Advanced:*\n"
+                "  /risk \u2014 Sharpe, MaxDD, WinRate\n"
+                "  /level \u2014 Support & Resistance\n"
+                "  /whale \u2014 Whale tracker\n"
+                "  /candle \u2014 Pola candlestick\n"
+                "  /news \u2014 Berita & fundamental\n\n"
+                "*\U0001f195 V7+ Features:*\n"
+                "  \U0001f5bc\ufe0f Kirim gambar \u2014 AI analisa\n"
+                "  /beli [harga] [jumlah] \u2014 Catat beli\n"
+                "  /portfolio \u2014 Lihat P&L\n"
+                "  /target [harga] \u2014 Alert di harga X\n"
+                "  /stats \u2014 Statistik bot\n\n"
+                "*\U0001f6e1\ufe0f Security:*\n"
+                "  /security \u2014 Status keamanan\n\n"
+                "\U0001f4ac *CHAT BEBAS:* Tanya apa saja!\n"
+                "_V8: Institutional-Grade AI Trading Engine_"
             )
             # Also send inline keyboard
             # (this return text will be sent, then we optionally send buttons)
+
+        # ===== V8: INSTITUTIONAL COMMANDS =====
+        if t in ['/tf', '/timeframe', '/multi', 'tf', 'timeframe']:
+            return self._cmd_multi_tf()
+
+        if t in ['/depth', '/orderbook', 'depth', 'orderbook']:
+            return self._cmd_depth()
+
+        if t in ['/spread', 'spread']:
+            return self._cmd_spread()
+
+        if t in ['/sentiment', '/sentimen', 'sentiment', 'sentimen']:
+            return self._cmd_sentiment()
+
+        if t in ['/btc', '/bitcoin', 'btc']:
+            return self._cmd_btc()
+
+        if t in ['/korelasi', '/corr', '/correlation', 'korelasi']:
+            return self._cmd_correlation()
+
+        if t in ['/manipulasi', '/manip', 'manipulasi']:
+            return self._cmd_manipulation()
+
+        if t in ['/plan', '/tradeplan', 'plan']:
+            return self._cmd_trade_plan()
+
+        if t in ['/winrate', '/wr', '/performance', 'winrate']:
+            return self._cmd_winrate()
+
+        if t in ['/health', '/api', 'health']:
+            return self._cmd_health()
 
         # PHONE LOOKUP — V7
         if t.startswith('/cek') or t.startswith('cek '):
             parts = text.strip().split(maxsplit=1)
             if len(parts) >= 2:
                 return self.lookup_phone(parts[1])
-            return "📱 *Cara pakai:*\n/cek 08123456789\n/cek +628123456789"
+            return "\U0001f4f1 *Cara pakai:*\n/cek 08123456789\n/cek +628123456789"
 
         # V7: PORTFOLIO TRACKER
         if t.startswith('/beli'):
@@ -1066,6 +1226,318 @@ class StandaloneBot:
 
         # DEFAULT → GROQ AI (Free Llama 3.3 70B)
         return self._ask_groq_ai(text)
+
+    # ============================================
+    # V8: INSTITUTIONAL COMMAND HANDLERS
+    # ============================================
+    def _cmd_multi_tf(self):
+        """Multi-Timeframe analysis across 7 timeframes."""
+        v8 = self._v8_cache
+        if not v8.get('multi_tf_score'):
+            return "⏳ V8 data belum siap. Tunggu analisis berikutnya..."
+
+        mts = v8['multi_tf_score']
+        regime = v8.get('regime', 'N/A')
+        vol_r = v8.get('vol_regime', {})
+        session = v8.get('session', {})
+        scenarios = v8.get('scenarios', {})
+
+        lines = [
+            "📊 *MULTI-TIMEFRAME V8*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"🎯 Consensus: *{mts.get('consensus', 'N/A')}*",
+            f"📈 Score: {mts.get('weighted_score', 0):+.1f}",
+            f"📐 TF Alignment: {mts.get('tf_alignment', 'N/A')}",
+            f"🔀 Regime: *{regime}*",
+            f"{session.get('label', '')} ({session.get('typical_vol', '')})",
+            "",
+            "*Per Timeframe:*",
+        ]
+
+        tf_sigs = mts.get('tf_signals', {})
+        for tf, sig in tf_sigs.items():
+            emoji = "🟢" if sig == 'BULLISH' else ("🔴" if sig == 'BEARISH' else "🟡")
+            lines.append(f"  {emoji} {tf}: {sig}")
+
+        # Volatility
+        if vol_r:
+            lines.append(f"\n⚡ Volatility: {vol_r.get('regime', 'N/A')} (P{vol_r.get('percentile', 0):.0f})")
+            if vol_r.get('is_squeeze'):
+                lines.append("🔥 *SQUEEZE DETECTED — Breakout Soon!*")
+
+        # Scenarios
+        if scenarios and scenarios.get('valid'):
+            lines.append("\n🔮 *Probabilistic Scenarios:*")
+            for key in ['bull', 'base', 'bear']:
+                s = scenarios['scenarios'].get(key, {})
+                lines.append(f"  {s.get('label', '')} Rp {s.get('target', 0):,.0f} ({s.get('probability', 0):.0f}%)")
+
+        return "\n".join(lines)
+
+    def _cmd_depth(self):
+        """Order book depth analysis."""
+        v8 = self._v8_cache
+        da = v8.get('depth_analysis', {})
+        if not da or not da.get('valid'):
+            # Try fresh
+            da = self.api.get_depth_analysis(PAIR)
+        if not da.get('valid'):
+            return "❌ Order book data tidak tersedia."
+
+        lines = [
+            "📊 *ORDER BOOK DEPTH V8*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"🟢 Best Bid: Rp {da['best_bid']:,.0f}",
+            f"🔴 Best Ask: Rp {da['best_ask']:,.0f}",
+            f"📏 Spread: Rp {da['spread']:,.0f} ({da['spread_pct']:.3f}%)",
+            f"⚖️ Buy Pressure: {da['buy_pressure']*100:.1f}%",
+            f"💧 Liquidity Score: {da['liquidity_score']:.0f}/100",
+            f"🔍 Spoof Score: {da['spoof_score']}/100",
+            f"📊 Wall Imbalance: {da['wall_imbalance']:+.2f}",
+        ]
+
+        if da.get('buy_walls'):
+            lines.append("\n🟢 *Buy Walls:*")
+            for w in da['buy_walls'][:3]:
+                lines.append(f"  Rp {w['price']:,.0f} → {w['vol']:,.0f} ISLM")
+
+        if da.get('sell_walls'):
+            lines.append("\n🔴 *Sell Walls:*")
+            for w in da['sell_walls'][:3]:
+                lines.append(f"  Rp {w['price']:,.0f} → {w['vol']:,.0f} ISLM")
+
+        return "\n".join(lines)
+
+    def _cmd_spread(self):
+        """Real-time bid/ask spread."""
+        da = self.api.get_depth_analysis(PAIR)
+        if not da.get('valid'):
+            return "❌ Spread data tidak tersedia."
+
+        return (
+            f"📏 *BID/ASK SPREAD*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🟢 Bid: Rp {da['best_bid']:,.0f}\n"
+            f"🔴 Ask: Rp {da['best_ask']:,.0f}\n"
+            f"📏 Spread: Rp {da['spread']:,.0f} ({da['spread_pct']:.3f}%)\n"
+            f"💰 Mid Price: Rp {da['mid_price']:,.0f}\n\n"
+            f"📊 Buy Vol: {da['total_buy_vol']:,.0f} ISLM\n"
+            f"📊 Sell Vol: {da['total_sell_vol']:,.0f} ISLM\n"
+            f"⚖️ Pressure: {'🟢 BUYERS' if da['buy_pressure'] > 0.55 else ('🔴 SELLERS' if da['buy_pressure'] < 0.45 else '🟡 EQUAL')}"
+        )
+
+    def _cmd_sentiment(self):
+        """Market sentiment score from multiple sources."""
+        score = self.sentiment_engine.compute_sentiment_score()
+        fg = self.sentiment_engine.get_fear_greed()
+        market = self.sentiment_engine.get_market_overview()
+
+        lines = [
+            "🧠 *MARKET SENTIMENT V8*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"📊 *Score: {score['score']:.0f}/100* {score['label']}",
+        ]
+
+        if fg.get('success'):
+            lines.append(f"😱 Fear & Greed: {fg['value']} ({fg['label']})")
+            lines.append(f"📈 Trend: {fg.get('trend', 'N/A')}")
+
+        if market.get('success'):
+            lines.append(f"\n🌐 *Market Overview:*")
+            lines.append(f"  BTC Dominance: {market['btc_dominance']:.1f}%")
+            lines.append(f"  {market.get('altseason_label', '')}")
+            lines.append(f"  Total MCap Change: {market.get('market_cap_change_24h', 0):+.1f}%")
+
+        if score.get('components'):
+            lines.append(f"\n📋 *Components:*")
+            c = score['components']
+            lines.append(f"  Fear & Greed: {c.get('fear_greed', 50)}")
+            lines.append(f"  Market Trend: {c.get('market_trend', 50):.0f}")
+            lines.append(f"  Alt Sentiment: {c.get('altcoin_sentiment', 50):.0f}")
+            lines.append(f"  BTC Momentum: {c.get('btc_momentum', 50):.0f}")
+
+        return "\n".join(lines)
+
+    def _cmd_btc(self):
+        """BTC macro analysis."""
+        report = self.sentiment_engine.generate_btc_report()
+        if report:
+            return report
+        return "❌ BTC data tidak tersedia saat ini."
+
+    def _cmd_correlation(self):
+        """Correlation matrix ISLM/BTC/ETH."""
+        corr = self.sentiment_engine.get_correlation_matrix()
+        if not corr.get('success'):
+            return "❌ Correlation data tidak tersedia (rate limit CoinGecko)."
+
+        lines = [
+            "🔗 *CORRELATION MATRIX (30 Hari)*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        for pair, data in corr.get('correlations', {}).items():
+            val = data['value']
+            strength = data['strength']
+            emoji = "🟢" if val > 0.5 else ("🔴" if val < -0.3 else "🟡")
+            lines.append(f"{emoji} {pair}: {val:+.3f} ({strength})")
+
+        lines.append("\n💡 *Artinya:*")
+        lines.append("  >0.7 = Bergerak sama arah")
+        lines.append("  <-0.3 = Bergerak berlawanan")
+        lines.append("  ~0 = Tidak berkorelasi")
+
+        return "\n".join(lines)
+
+    def _cmd_manipulation(self):
+        """Manipulation scan report."""
+        v8 = self._v8_cache
+        scan = v8.get('manip_scan', {})
+        if not scan:
+            # Run fresh scan
+            c = self._cache
+            prices = list(self.price_history[-50:]) if self.price_history else []
+            candles = self.api.get_kline(PAIR, '15')
+            volumes = [c_item.get('vol', 0) for c_item in (candles or [])]
+            scan = ManipulationDetector.full_scan(prices, volumes)
+
+        risk = scan.get('manipulation_risk', 'UNKNOWN')
+        emoji = "🟢" if risk == 'LOW' else ("🟡" if risk == 'MEDIUM' else "🔴")
+
+        lines = [
+            f"🔍 *MANIPULATION SCAN V8*",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"{emoji} Risk Level: *{risk}*",
+            f"⚠️ Alerts: {scan.get('alert_count', 0)}",
+        ]
+
+        for check_name, check_data in scan.get('checks', {}).items():
+            detected = check_data.get('detected', False)
+            icon = "🔴" if detected else "🟢"
+            label = check_name.replace('_', ' ').title()
+            lines.append(f"\n{icon} *{label}:*")
+            if detected:
+                for k, v in check_data.items():
+                    if k not in ('detected', 'type'):
+                        lines.append(f"  {k}: {v}")
+            else:
+                lines.append("  Status: Aman")
+
+        return "\n".join(lines)
+
+    def _cmd_trade_plan(self):
+        """Full institutional trade plan."""
+        v8 = self._v8_cache
+        plan = v8.get('trade_plan', {})
+        c = self._cache
+        if not plan or not plan.get('entries', {}).get('valid'):
+            return "⏳ Trade plan belum siap. Tunggu analisis..."
+
+        lines = [
+            "📋 *TRADE PLAN V8*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"📊 Signal: *{plan['signal']}* ({plan['confidence']*100:.0f}%)",
+            f"🔀 Structure: {plan['structure']}",
+            f"📈 RSI: {plan['rsi']:.0f}",
+            f"🎯 Grade: *{plan['grade']}*",
+        ]
+
+        # Entry zones
+        entries = plan.get('entries', {})
+        if entries.get('valid'):
+            lines.append("\n💰 *ENTRY ZONES:*")
+            for z in entries.get('zones', []):
+                lines.append(f"  {z['label']}: Rp {z['price']:,.0f} ({z['allocation']})")
+            lines.append(f"  📍 Avg Entry: Rp {entries.get('avg_entry', 0):,.0f}")
+
+        # Stop loss
+        sl = plan.get('stop_loss', {})
+        if sl.get('valid'):
+            lines.append(f"\n🛑 *STOP LOSS:* Rp {sl['stop_loss']:,.0f} (-{sl['risk_pct']:.1f}%)")
+
+        # Take profit
+        tp = plan.get('take_profit', {})
+        if tp.get('valid'):
+            lines.append("\n🎯 *TAKE PROFIT:*")
+            for level in tp.get('levels', []):
+                lines.append(f"  {level['label']}: Rp {level['price']:,.0f} ({level['sell_pct']}) RR:{level['rr']}")
+
+        # Risk-reward
+        rr = plan.get('risk_reward', {})
+        if rr.get('valid'):
+            accept = "✅" if rr['acceptable'] else "❌"
+            lines.append(f"\n{accept} *R:R Ratio:* 1:{rr['rr_ratio']:.1f}")
+
+        # Win rate
+        wr = plan.get('winrate', {})
+        if wr.get('valid'):
+            lines.append(f"📈 Win Rate (30d): {wr['winrate']:.0f}% ({wr['total']} signals)")
+
+        return "\n".join(lines)
+
+    def _cmd_winrate(self):
+        """Signal performance and win rate."""
+        report = self.signal_tracker.get_performance_report()
+
+        lines = [
+            "📈 *SIGNAL PERFORMANCE V8*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"📊 Total Signals: {report.get('total_signals', 0)}",
+            f"🔓 Open: {report.get('open_signals', 0)}",
+        ]
+
+        for window in ['1H', '4H', '24H', '24H_90d']:
+            wr = report.get(window, {})
+            if wr.get('valid') and wr['total'] > 0:
+                label = window.replace('24H_90d', '24H (90 hari)')
+                lines.append(f"\n📊 *{label}:*")
+                lines.append(f"  Win Rate: {wr['winrate']:.0f}%")
+                lines.append(f"  W/L: {wr['wins']}/{wr['losses']}")
+                lines.append(f"  Avg PnL: {wr['avg_pnl']:+.2f}%")
+                lines.append(f"  Best: {wr['best']:+.2f}% | Worst: {wr['worst']:+.2f}%")
+                lines.append(f"  Profit Factor: {wr['profit_factor']:.1f}")
+
+        # Drawdown check
+        should_pause, pause_reason = self.signal_tracker.should_pause_signals()
+        if should_pause:
+            lines.append(f"\n🔴 *DRAWDOWN CONTROL ACTIVE*")
+            lines.append(f"  {pause_reason}")
+            lines.append("  Signals paused until winrate improves")
+        else:
+            lines.append(f"\n🟢 Drawdown control: OK")
+
+        return "\n".join(lines)
+
+    def _cmd_health(self):
+        """API health and data quality report."""
+        health = self.api.health.get_report()
+        validator = self.api.validator.get_stats()
+        tick_stats = self.api.get_tick_stats()
+
+        lines = [
+            "🏥 *API HEALTH V8*",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            f"{'🟢' if health['healthy'] else '🔴'} Status: {'HEALTHY' if health['healthy'] else 'DEGRADED'}",
+            f"⚡ Avg Latency: {health['avg_latency_ms']:.0f}ms",
+            f"📊 P95 Latency: {health['p95_latency_ms']:.0f}ms",
+            f"❌ Error Rate: {health['error_rate']:.1f}%",
+            f"📈 Uptime: {health['uptime_pct']:.1f}%",
+            f"📊 Total Requests: {health['total_requests']}",
+            "",
+            "📊 *Data Quality:*",
+            f"  Total Ticks: {validator['total']}",
+            f"  Rejected: {validator['rejected']} ({validator['reject_rate']*100:.1f}%)",
+            f"  Buffer: {validator['buffer_size']} samples",
+        ]
+
+        if tick_stats.get('valid'):
+            lines.append(f"\n⏱️ *Tick Stats:*")
+            lines.append(f"  Current: Rp {tick_stats['current']:,.0f}")
+            lines.append(f"  Trend: {tick_stats['recent_trend']}")
+            lines.append(f"  Range: Rp {tick_stats['recent_range']:,.0f}")
+            lines.append(f"  Rate: {tick_stats['ticks_per_min']:.1f}/min")
+
+        return "\n".join(lines)
 
     # ============================================
     # GROQ AI V7+ — Role-Based Multi-Key + Genius Mode
@@ -1993,6 +2465,29 @@ class StandaloneBot:
                     self._check_github_repo()
                 except Exception as e:
                     safe_print(f"[GITHUB-ERR] {e}")
+
+                # V8: Auto-evaluate signals every hour
+                try:
+                    if now - self._last_signal_eval >= self._signal_eval_interval:
+                        price = self._cache.get('price', 0)
+                        if price > 0:
+                            evald = self.signal_tracker.evaluate_signals(price)
+                            if evald > 0:
+                                safe_print(f"[V8] Evaluated {evald} signals")
+                        self._last_signal_eval = now
+                except Exception as e:
+                    safe_print(f"[V8-EVAL-ERR] {e}")
+
+                # V8: BTC Macro Report every 2 days
+                try:
+                    if now - self._last_btc_report >= self._btc_report_interval:
+                        safe_print("[V8] Generating BTC macro report...")
+                        report = self.sentiment_engine.generate_btc_report()
+                        if report:
+                            self.send_message(report)
+                        self._last_btc_report = now
+                except Exception as e:
+                    safe_print(f"[V8-BTC-ERR] {e}")
 
                 # Scheduled notifications (respect pause)
                 if not self.notifications_paused:
