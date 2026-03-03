@@ -40,6 +40,8 @@ import pandas as pd
 import numpy as np
 from backend.api import IndodaxAPI
 from backend.config import Config
+from backend.market_scanner import MarketScanner, OperationalMode
+from backend.prediction_tracker import PredictionTracker
 from backend.core_logic import (
     MarketProjector, FundamentalEngine, QuantAnalyzer,
     CandleSniper, WhaleTracker, AISignalEngine,
@@ -92,7 +94,8 @@ INTERVAL_30MIN = 1800   # 30 minutes
 INTERVAL_1HOUR = 3600   # 1 hour
 INTERVAL_DAILY = 86400  # 24 hours
 POLL_INTERVAL = 3       # Telegram poll every 3s
-PAIR = 'islmidr'
+DEFAULT_PAIR = 'islmidr'
+DEFAULT_COIN = 'ISLM'
 
 
 # ============================================
@@ -117,6 +120,16 @@ class StandaloneBot:
             Config.SECRET_KEY or os.environ.get('INDODAX_SECRET_KEY', '')
         )
         self.security = SecurityEngine(self.token, self.chat_id)
+
+        # V9: Master Control & Dynamic Pair
+        self.system_active = True
+        self.active_pair = DEFAULT_PAIR
+        self.active_coin = DEFAULT_COIN
+
+        # V9: Market Scanner & Prediction Tracker
+        self.scanner = MarketScanner()
+        self.predictor = PredictionTracker()
+        self._last_scan_time = 0
 
         # Interval timers
         self.last_30min = 0
@@ -245,6 +258,10 @@ class StandaloneBot:
         # V7: Notification Control
         self.notifications_paused = False
 
+        # V9: System state tracking
+        self._stats['scans_run'] = 0
+        self._stats['predictions_tracked'] = 0
+
         # V7: GitHub Repo Security
         self._github_repo = os.environ.get('GITHUB_REPO', 'SHOTCAN/ISLM-koin')
         self._github_token = os.environ.get('GITHUB_TOKEN', '')
@@ -297,7 +314,7 @@ class StandaloneBot:
     def refresh_analysis(self):
         try:
             # Price
-            ticker = self.api.get_price(PAIR)
+            ticker = self.api.get_price(self.active_pair)
             if not ticker.get('success'):
                 safe_print("[WARN] Price fetch failed")
                 return False
@@ -309,7 +326,7 @@ class StandaloneBot:
             self.daily_low = min(self.daily_low, price)
 
             # Candles
-            candles = self.api.get_kline(PAIR, '15')
+            candles = self.api.get_kline(self.active_pair, '15')
             if not candles or len(candles) < 10:
                 return False
 
@@ -348,7 +365,7 @@ class StandaloneBot:
 
             # Whale
             try:
-                depth = self.api.get_depth(PAIR) or {}
+                depth = self.api.get_depth(self.active_pair) or {}
                 whale_ratio = WhaleTracker.get_whale_ratio(depth.get('buy', []), depth.get('sell', []), 0.1)
             except:
                 whale_ratio = 0.5
@@ -383,14 +400,14 @@ class StandaloneBot:
                 tf_results = {}
                 for tf_key, tf_cfg in MultiTimeframeEngine.TIMEFRAMES.items():
                     try:
-                        tf_candles = self.api.get_kline(PAIR, tf_key)
+                        tf_candles = self.api.get_kline(self.active_pair, tf_key)
                         if tf_candles and len(tf_candles) >= tf_cfg['min_candles']:
                             tf_results[tf_key] = MultiTimeframeEngine.analyze_single_tf(tf_candles, tf_cfg['label'])
                     except:
                         pass
 
                 # Regime detection
-                candles_1d = self.api.get_kline(PAIR, '1D')
+                candles_1d = self.api.get_kline(self.active_pair, '1D')
                 regime = MultiTimeframeEngine.detect_regime(candles_1d)
 
                 # Weighted multi-TF score
@@ -412,7 +429,7 @@ class StandaloneBot:
                 scenarios = MultiTimeframeEngine.probabilistic_scenarios(candles, tf_results)
 
                 # Order book analysis
-                depth_analysis = self.api.get_depth_analysis(PAIR)
+                depth_analysis = self.api.get_depth_analysis(self.active_pair)
 
                 # Market structure
                 structure = MultiTimeframeEngine.detect_market_structure(candles)
@@ -538,7 +555,7 @@ class StandaloneBot:
             ai_insight = ""
 
         msg = (
-            f"⚡ *ISLM UPDATE (30min)*\n"
+            f"⚡ *{self.active_coin} UPDATE (30min)*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 Harga: Rp {c['price']:,.0f}\n"
             f"📢 Sinyal: {sig['label']} ({sig['confidence']*100:.0f}%)\n"
@@ -565,7 +582,7 @@ class StandaloneBot:
         pta = c["pro_ta"]
 
         lines = [
-            "🤖 *ISLM FULL ANALYSIS V5 (1 Jam)*",
+            f"🤖 *{self.active_coin} FULL ANALYSIS V5 (1 Jam)*",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"💰 *Harga:* Rp {c['price']:,.0f}",
             f"📢 *AI Signal:* {sig['label']} ({sig['confidence']*100:.0f}%)",
@@ -672,7 +689,7 @@ class StandaloneBot:
         emoji_change = "🟢" if daily_change >= 0 else "🔴"
 
         lines = [
-            "📅 *ISLM DAILY RECAP V5*",
+            f"📅 *{self.active_coin} DAILY RECAP V5*",
             "━━━━━━━━━━━━━━━━━━━━━━",
             f"📆 {datetime.now().strftime('%d %B %Y')}",
             "",
@@ -777,49 +794,250 @@ class StandaloneBot:
         ml = c["ml_result"]
         pta = c["pro_ta"]
 
+        # ===== V9: MASTER CONTROL COMMANDS =====
+        if t in ['/deactivate', '/off', '/matikan', 'matikan']:
+            self.system_active = False
+            self.notifications_paused = True
+            return (
+                "\U0001f534 *SISTEM DIMATIKAN*\n"
+                "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                "Semua operasi BERHENTI:\n"
+                "  \u274c Analisis\n"
+                "  \u274c Monitoring\n"
+                "  \u274c Prediksi\n"
+                "  \u274c Alerts & Notifikasi\n"
+                "  \u274c Scanner\n"
+                "  \u274c Background processes\n\n"
+                "Ketik /activate untuk aktifkan kembali."
+            )
+
+        if t in ['/activate', '/on', '/aktifkan', 'aktifkan']:
+            self.system_active = True
+            self.notifications_paused = False
+            # Reset timers so everything runs fresh
+            now = time.time()
+            self.last_30min = now
+            self.last_1hour = now
+            self.last_daily = now
+            self.refresh_analysis()
+            return (
+                "\U0001f7e2 *SISTEM AKTIF KEMBALI*\n"
+                "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                "Semua operasi DILANJUTKAN:\n"
+                "  \u2705 Analisis\n"
+                "  \u2705 Monitoring\n"
+                "  \u2705 Prediksi\n"
+                "  \u2705 Alerts & Notifikasi\n"
+                "  \u2705 Scanner\n\n"
+                f"\U0001f4e1 Coin aktif: *{self.active_coin}*\n"
+                f"\U0001f4ca Mode: *{self.scanner.mode}*"
+            )
+
+        # Block ALL commands except /activate when system is off
+        if not self.system_active:
+            return (
+                "\U0001f534 *SISTEM MATI*\n"
+                "Ketik /activate untuk aktifkan kembali."
+            )
+
+        # ===== V9: DYNAMIC COIN SWITCHING =====
+        if t.startswith('/switch') or t.startswith('/ganti'):
+            parts = text.strip().split()
+            if len(parts) >= 2:
+                coin_name = parts[1].lower().replace('/', '')
+                new_pair = f"{coin_name}idr"
+                # Validate pair exists
+                try:
+                    test = self.api.get_price(new_pair)
+                    if not test.get('success'):
+                        return f"\u274c Coin '{coin_name.upper()}' tidak ditemukan di Indodax.\n\n\U0001f4a1 Ketik /coins untuk lihat daftar."
+                except:
+                    return f"\u274c Gagal cek coin '{coin_name.upper()}'"
+
+                old_coin = self.active_coin
+                self.active_pair = new_pair
+                self.active_coin = coin_name.upper()
+                # Reset state for new coin
+                self.price_history.clear()
+                self.daily_high = 0
+                self.daily_low = float('inf')
+                self._cache['price'] = 0
+                self.last_alert_price = 0
+                safe_print(f"[V9] Switched from {old_coin} to {self.active_coin}")
+                # Run fresh analysis
+                self.refresh_analysis()
+                return (
+                    f"\U0001f504 *COIN SWITCHED*\n"
+                    f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                    f"\u274c {old_coin} \u2192 \u2705 *{self.active_coin}*\n\n"
+                    f"Semua modul sekarang fokus ke *{self.active_coin}*:\n"
+                    f"  \u2705 Technical Analysis\n"
+                    f"  \u2705 Price Monitoring\n"
+                    f"  \u2705 Predictions\n"
+                    f"  \u2705 Alerts\n"
+                    f"  \u2705 Multi-Timeframe\n\n"
+                    f"\U0001f4b0 Harga: Rp {self._cache.get('price', 0):,.0f}\n"
+                    f"Ketik /status untuk analisa lengkap."
+                )
+            return (
+                "\U0001f504 *SWITCH COIN*\n"
+                f"Coin aktif sekarang: *{self.active_coin}*\n\n"
+                "Cara pakai:\n"
+                "  `/switch btc` \u2014 Ganti ke Bitcoin\n"
+                "  `/switch eth` \u2014 Ganti ke Ethereum\n"
+                "  `/switch plpa` \u2014 Ganti ke PLPA\n"
+                "  `/switch islm` \u2014 Kembali ke ISLM\n\n"
+                "\U0001f4a1 Ketik /coins untuk lihat daftar lengkap."
+            )
+
+        if t in ['/coins', '/daftar', 'coins', 'daftar']:
+            try:
+                pairs = self.api.get_all_pairs()
+                if pairs:
+                    # Show top 20 by name
+                    lines = ["\U0001fa99 *DAFTAR COIN INDODAX*\n"]
+                    for p in pairs[:25]:
+                        base = p.get('base', '?').upper()
+                        star = ' \u2b50' if base == self.active_coin else ''
+                        lines.append(f"  `{base}`{star}")
+                    lines.append(f"\n_Total: {len(pairs)} pasangan_")
+                    lines.append(f"\n\U0001f4a1 Gunakan `/switch [coin]` untuk ganti.")
+                    return "\n".join(lines)
+            except:
+                pass
+            return "\u274c Gagal ambil daftar coin."
+
+        # ===== V9: MARKET SCANNER =====
+        if t.startswith('/scan'):
+            parts = text.strip().split()
+            if len(parts) >= 2:
+                # Detailed scan for specific coin
+                coin_name = parts[1].lower()
+                pair_key = f"{coin_name}idr"
+                try:
+                    candles = self.api.get_kline(pair_key, '60')
+                    ticker = self.api.get_price(pair_key)
+                    if candles and len(candles) >= 30 and ticker.get('success'):
+                        from backend.market_scanner import CoinAnalysis, MarketRegimeDetector
+                        analysis = CoinAnalysis.analyze(candles, ticker)
+                        regime = MarketRegimeDetector.detect(candles)
+                        adj_prob = MarketRegimeDetector.adjust_confidence(
+                            analysis['probability'], regime['regime'], analysis['direction']
+                        )
+                        result = {
+                            'coin': coin_name.upper(), 'pair': pair_key,
+                            'probability': adj_prob, 'raw_probability': analysis['probability'],
+                            'direction': analysis['direction'],
+                            'passed_layers': analysis['passed_layers'],
+                            'layers': analysis['layers'], 'regime': regime,
+                            'price': analysis['price'], 'rsi': analysis['rsi'],
+                            'vol_usd': 0,
+                        }
+                        return self.scanner.format_scan_result(result)
+                    return f"\u274c Data tidak cukup untuk scan {coin_name.upper()}"
+                except Exception as e:
+                    return f"\u274c Scan error: {e}"
+            else:
+                # Full market scan
+                try:
+                    results = self.scanner.scan_all(self.api, top_n=20)
+                    config = self.scanner.get_mode_config()
+                    self._stats['scans_run'] += 1
+                    return self.scanner.format_scan_summary(results, config)
+                except Exception as e:
+                    return f"\u274c Scan error: {e}"
+
+        # ===== V9: OPERATIONAL MODE =====
+        if t.startswith('/mode'):
+            parts = text.strip().split()
+            if len(parts) >= 2:
+                mode_key = parts[1].lower()
+                if self.scanner.set_mode(mode_key):
+                    config = self.scanner.get_mode_config()
+                    return (
+                        f"\u2705 *MODE UPDATED: {config['name']}*\n"
+                        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                        f"{config['description']}\n\n"
+                        f"\U0001f3af Min Confidence: {config['min_confidence']}%\n"
+                        f"\u23f0 Scan Interval: {config['scan_interval']//60} menit\n"
+                        f"\U0001f514 Alert: {'ON' if config['alert_enabled'] else 'OFF'}\n"
+                        f"\U0001f4b0 Min Volume: ${config['min_volume_usd']:,.0f}\n"
+                        f"\u23f3 Cooldown: {config['cooldown_minutes']} menit"
+                    )
+                return f"\u274c Mode '{mode_key}' tidak valid.\n\n{OperationalMode.list_modes()}"
+            return (
+                f"\u2699\ufe0f *OPERATIONAL MODE*\n"
+                f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                f"Mode aktif: *{self.scanner.mode}*\n\n"
+                f"Pilihan mode:\n"
+                f"{OperationalMode.list_modes()}\n\n"
+                f"Gunakan: `/mode [nama]`"
+            )
+
+        # ===== V9: THRESHOLD =====
+        if t.startswith('/threshold'):
+            parts = text.strip().split()
+            if len(parts) >= 2:
+                try:
+                    pct = int(parts[1])
+                    if self.scanner.set_threshold(pct):
+                        return f"\u2705 *THRESHOLD UPDATED*\nMinimum confidence: *{pct}%*\n\nBot hanya kirim alert jika probability \u2265 {pct}%."
+                    return "\u274c Threshold harus antara 10-99%"
+                except ValueError:
+                    return "\u274c Format: `/threshold 70`"
+            config = self.scanner.get_mode_config()
+            return (
+                f"\U0001f3af *CONFIDENCE THRESHOLD*\n"
+                f"Threshold sekarang: *{config['min_confidence']}%*\n\n"
+                f"Gunakan `/threshold [angka]` untuk ubah.\n"
+                f"Contoh: `/threshold 75`"
+            )
+
+        # ===== V9: PREDICTION ACCURACY =====
+        if t in ['/accuracy', '/akurasi', 'akurasi', 'accuracy']:
+            return self.predictor.get_accuracy_report()
+
         # /start /menu /help
         if t in ['/start', '/menu', '/help', 'help', 'bantuan', 'menu']:
+            coin = self.active_coin
+            mode = self.scanner.mode
+            status_emoji = '\U0001f7e2' if self.system_active else '\U0001f534'
             return (
-                "\U0001f916 *ISLM AI V8 \u2014 INSTITUTIONAL ENGINE*\n\n"
-                "*\U0001f4ca Market:*\n"
+                f"\U0001f916 *{coin} AI V9 \u2014 MULTI-COIN ENGINE*\n"
+                f"{status_emoji} Coin: *{coin}* | Mode: *{mode}*\n\n"
+                f"*\U0001f4ca Market:*\n"
                 "  /status \u2014 Kondisi market\n"
                 "  /predict \u2014 Prediksi harga\n"
                 "  /analisa \u2014 Teknikal lengkap\n"
                 "  /sinyal \u2014 Sinyal AI\n"
                 "  /ml \u2014 Sinyal ML\n\n"
-                "*\U0001f4c8 V8 Institutional:*\n"
+                f"*\U0001f504 V9 Multi-Coin:*\n"
+                "  /switch [coin] \u2014 Ganti coin\n"
+                "  /coins \u2014 Daftar coin Indodax\n"
+                "  /scan \u2014 Scan semua coin\n"
+                "  /scan [coin] \u2014 Detail scan 1 coin\n\n"
+                f"*\u2699\ufe0f V9 Control:*\n"
+                "  /mode [mode] \u2014 Ubah mode operasi\n"
+                "  /threshold [%] \u2014 Set min confidence\n"
+                "  /accuracy \u2014 Akurasi prediksi\n"
+                "  /activate | /deactivate \u2014 On/Off sistem\n\n"
+                f"*\U0001f4c8 Institutional:*\n"
                 "  /tf \u2014 Multi-Timeframe (7 TF)\n"
-                "  /depth \u2014 Order book depth + walls\n"
+                "  /depth \u2014 Order book + walls\n"
                 "  /spread \u2014 Bid/Ask spread\n"
-                "  /sentiment \u2014 Market sentiment score\n"
-                "  /btc \u2014 BTC macro analysis\n"
-                "  /korelasi \u2014 Correlation matrix\n"
+                "  /sentiment \u2014 Sentiment score\n"
                 "  /manipulasi \u2014 Manipulation scan\n"
                 "  /plan \u2014 Full trade plan\n"
-                "  /winrate \u2014 Signal performance\n"
-                "  /health \u2014 API health + data quality\n\n"
-                "*\U0001fa99 Multi-Coin:*\n"
-                "  /coin \u2014 Top coins Indodax\n"
-                "  /coin btc \u2014 Harga BTC\n\n"
-                "*\U0001f4c8 Advanced:*\n"
+                "  /winrate \u2014 Signal performance\n\n"
+                f"*\U0001f4c8 Advanced:*\n"
                 "  /risk \u2014 Sharpe, MaxDD, WinRate\n"
-                "  /level \u2014 Support & Resistance\n"
                 "  /whale \u2014 Whale tracker\n"
-                "  /candle \u2014 Pola candlestick\n"
-                "  /news \u2014 Berita & fundamental\n\n"
-                "*\U0001f195 V7+ Features:*\n"
-                "  \U0001f5bc\ufe0f Kirim gambar \u2014 AI analisa\n"
-                "  /beli [harga] [jumlah] \u2014 Catat beli\n"
-                "  /portfolio \u2014 Lihat P&L\n"
-                "  /target [harga] \u2014 Alert di harga X\n"
+                "  /news \u2014 Berita & fundamental\n"
+                "  /target [harga] \u2014 Price alert\n"
                 "  /stats \u2014 Statistik bot\n\n"
-                "*\U0001f6e1\ufe0f Security:*\n"
-                "  /security \u2014 Status keamanan\n\n"
                 "\U0001f4ac *CHAT BEBAS:* Tanya apa saja!\n"
-                "_V8: Institutional-Grade AI Trading Engine_"
+                "_V9: Multi-Coin AI Trading Engine_"
             )
-            # Also send inline keyboard
-            # (this return text will be sent, then we optionally send buttons)
 
         # ===== V8: INSTITUTIONAL COMMANDS =====
         if t in ['/tf', '/timeframe', '/multi', 'tf', 'timeframe']:
@@ -913,7 +1131,7 @@ class StandaloneBot:
                 return "💼 *PORTFOLIO KOSONG*\nBelum ada posisi.\nGunakan /beli [harga] [jumlah] untuk catat pembelian."
             
             current_price = c['price']
-            lines = ["💼 *PORTFOLIO ISLM*", "━━━━━━━━━━━━━━━━━━━━━━"]
+            lines = [f"💼 *PORTFOLIO {self.active_coin}*", "━━━━━━━━━━━━━━━━━━━━━━"]
             total_value = 0
             total_cost = 0
             
@@ -1033,7 +1251,7 @@ class StandaloneBot:
         if any(k in t for k in ['/status', 'status', 'harga', 'price', 'berapa', 'market', 'kondisi']):
             bb_info = f"BB: Rp {c['bb_lower']:,.0f} — Rp {c['bb_upper']:,.0f}" if c['bb_upper'] else "BB: N/A"
             resp = (
-                f"📊 *STATUS ISLM*\n\n"
+                f"📊 *STATUS {self.active_coin}*\n\n"
                 f"💰 Harga: Rp {c['price']:,.0f}\n"
                 f"📢 Sinyal: {sig['label']} ({sig['confidence']*100:.0f}%)\n"
                 f"📈 Trend: {sig['trend']}\n"
@@ -1049,7 +1267,7 @@ class StandaloneBot:
 
         # PREDICT
         if any(k in t for k in ['/predict', 'prediksi', 'ramal', 'forecast', 'target', 'naik', 'turun']):
-            lines = [f"🔮 *PREDIKSI AI ISLM*\n💰 Harga: Rp {c['price']:,.0f}\n"]
+            lines = [f"🔮 *PREDIKSI AI {self.active_coin}*\n💰 Harga: Rp {c['price']:,.0f}\n"]
             for k, p in c["predictions"].items():
                 lines.append(
                     f"*{p['label']}:* Rp {p['target']:,.0f} ({p['change_pct']:+.1f}%) {p['direction']}\n"
@@ -1065,7 +1283,7 @@ class StandaloneBot:
 
         # TECHNICAL ANALYSIS
         if any(k in t for k in ['/analisa', 'analisa', 'teknikal', 'technical', 'indikator']):
-            lines = [f"📊 *ANALISA TEKNIKAL ISLM V4*\n"]
+            lines = [f"📊 *ANALISA TEKNIKAL {self.active_coin} V4*\n"]
             lines.append(f"📈 RSI: {c['rsi']:.1f}")
             lines.append(f"📉 MACD: {c['macd_val']:.2f} | Hist: {c['hist']:+.2f}")
             lines.append(f"📊 Stoch: {c['stoch_k']:.1f}")
@@ -1107,7 +1325,7 @@ class StandaloneBot:
         if any(k in t for k in ['/news', 'berita', 'news', 'fundamental', 'kabar', 'sentimen']):
             news = NewsEngine.generate_news(c['market_phase'], c['whale_ratio'])
             return (
-                f"📰 *BERITA & FUNDAMENTAL ISLM*\n\n"
+                f"📰 *BERITA & FUNDAMENTAL {self.active_coin}*\n\n"
                 f"{c['f_news']}\n\n"
                 f"📰 {news}\n\n"
                 f"📊 Skor: {c['f_score']}/10 | Fase: {c['market_phase']}\n"
@@ -1195,7 +1413,7 @@ class StandaloneBot:
             if len(self.price_history) >= 10:
                 risk = RiskMetrics.full_report(self.price_history)
                 return (
-                    f"📊 *RISK METRICS ISLM*\n\n"
+                    f"📊 *RISK METRICS {self.active_coin}*\n\n"
                     f"📈 Sharpe Ratio: {risk['sharpe']:.2f}\n"
                     f"📉 Max Drawdown: {risk['max_dd']:.1f}%\n"
                     f"✅ Win Rate: {risk['win_rate']:.0f}%\n"
@@ -1280,7 +1498,7 @@ class StandaloneBot:
         da = v8.get('depth_analysis', {})
         if not da or not da.get('valid'):
             # Try fresh
-            da = self.api.get_depth_analysis(PAIR)
+            da = self.api.get_depth_analysis(self.active_pair)
         if not da.get('valid'):
             return "❌ Order book data tidak tersedia."
 
@@ -1310,7 +1528,7 @@ class StandaloneBot:
 
     def _cmd_spread(self):
         """Real-time bid/ask spread."""
-        da = self.api.get_depth_analysis(PAIR)
+        da = self.api.get_depth_analysis(self.active_pair)
         if not da.get('valid'):
             return "❌ Spread data tidak tersedia."
 
@@ -1397,7 +1615,7 @@ class StandaloneBot:
             # Run fresh scan
             c = self._cache
             prices = list(self.price_history[-50:]) if self.price_history else []
-            candles = self.api.get_kline(PAIR, '15')
+            candles = self.api.get_kline(self.active_pair, '15')
             volumes = [c_item.get('vol', 0) for c_item in (candles or [])]
             scan = ManipulationDetector.full_scan(prices, volumes)
 
@@ -2325,13 +2543,13 @@ class StandaloneBot:
     # ============================================
     def run(self):
         safe_print("=" * 55)
-        safe_print("🤖 ISLM Monitor V7 — AI Genius Bot")
+        safe_print("🤖 AI Trading Bot V9 — Multi-Coin Engine")
         safe_print(f"📡 Token: ...{self.token[-6:]}" if self.token else "❌ NO TOKEN!")
         safe_print(f"💬 Chat ID: {self.chat_id}")
+        safe_print(f"🪙 Active Coin: {self.active_coin}")
+        safe_print(f"📊 Scanner Mode: {self.scanner.mode}")
         safe_print(f"⏱️ Intervals: 30min / 1h / Daily + Smart Alerts")
-        safe_print(f"🧠 AI V7: Memory + Vision + Chain-of-Thought")
-        safe_print(f"⚡ Volatility Mode: Adaptive (10min during turbulence)")
-        safe_print(f"📱 Phone Lookup: Active")
+        safe_print(f"🧠 AI V9: Multi-Coin + Scanner + Self-Improving")
         safe_print("=" * 55)
 
         start_health_server()
@@ -2345,21 +2563,20 @@ class StandaloneBot:
         if self.refresh_analysis():
             self.last_alert_price = self._cache.get('price', 0)
             self.send_message(
-                "🟢 *ISLM Bot V7 AKTIF*\n\n"
-                "🧠 *AI Engine V7:*\n"
-                "  • AI Genius + Memory\n"
-                "  • 🖼️ Analisa Gambar (kirim foto!)\n"
-                "  • 📱 Cek Nomor HP\n"
-                "  • Smart Price Alerts\n\n"
+                f"🟢 *{self.active_coin} Bot V9 AKTIF*\n\n"
+                "🧠 *V9 Engine:*\n"
+                "  • 🔄 Multi-Coin Switch\n"
+                "  • 🔍 Market Scanner\n"
+                "  • 📊 Self-Improving Predictions\n"
+                "  • ⚙️ Operational Modes\n\n"
                 "📡 *Notifikasi:*\n"
                 "  • ⚡ 30m / 📊 1h / 📅 Daily\n"
                 "  • 🚨 Alert ±3% / ⚡ Volatile Mode\n\n"
-                "💬 Chat / kirim gambar / /cek [nomor]\n"
-                "Ketik /menu untuk semua perintah."
+                "💬 Ketik /menu untuk semua perintah."
             )
             self.send_1hour_update()
         else:
-            self.send_message("⚠️ *Bot V7 Started* (menunggu data...)")
+            self.send_message("⚠️ *Bot V9 Started* (menunggu data...)")
 
         now = time.time()
         self.last_30min = now
@@ -2446,7 +2663,11 @@ class StandaloneBot:
                                 else:
                                     self.send_message(reply)
 
-                # --- Multi-interval notifications ---
+                # --- ALL BACKGROUND: Only when system_active ---
+                if not self.system_active:
+                    time.sleep(POLL_INTERVAL)
+                    continue
+
                 now = time.time()
 
                 # V6: Smart Price Alert (every poll cycle)
@@ -2454,7 +2675,6 @@ class StandaloneBot:
                     if self._cache.get('price'):
                         self.check_price_alert()
                         self.check_volatility()
-                        # V7: Check custom price targets
                         self._check_custom_targets()
                 except Exception as e:
                     safe_print(f"[ALERT-ERR] {e}")
@@ -2489,6 +2709,32 @@ class StandaloneBot:
                 except Exception as e:
                     safe_print(f"[V8-BTC-ERR] {e}")
 
+                # V9: Auto-scan market
+                try:
+                    if self.scanner.should_scan():
+                        config = self.scanner.get_mode_config()
+                        if config.get('alert_enabled'):
+                            safe_print("[V9] Running auto market scan...")
+                            results = self.scanner.scan_all(self.api, top_n=15)
+                            self._stats['scans_run'] += 1
+                            if results:
+                                summary = self.scanner.format_scan_summary(results, config)
+                                self.send_message(summary)
+                except Exception as e:
+                    safe_print(f"[V9-SCAN-ERR] {e}")
+
+                # V9: Evaluate prediction accuracy
+                try:
+                    price = self._cache.get('price', 0)
+                    if price > 0:
+                        current_prices = {self.active_coin: price}
+                        evald = self.predictor.evaluate_pending(current_prices)
+                        if evald > 0:
+                            safe_print(f"[V9] Evaluated {evald} predictions")
+                            self._stats['predictions_tracked'] += evald
+                except Exception as e:
+                    safe_print(f"[V9-PRED-ERR] {e}")
+
                 # Scheduled notifications (respect pause)
                 if not self.notifications_paused:
                     # V6: Volatile mode — extra updates every 10 min
@@ -2521,7 +2767,7 @@ class StandaloneBot:
 
             except KeyboardInterrupt:
                 safe_print("\n[EXIT] Bot stopped.")
-                self.send_message("🔴 *Bot V7 Stopped*")
+                self.send_message(f"🔴 *{self.active_coin} Bot V9 Stopped*")
                 break
             except Exception as e:
                 safe_print(f"[ERROR] {e}")
