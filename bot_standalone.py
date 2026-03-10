@@ -1188,42 +1188,48 @@ class StandaloneBot:
             coin = self.active_coin
             mode = self.scanner.mode
             status_emoji = '\U0001f7e2' if self.system_active else '\U0001f534'
+            trade_status = ''
+            if self.trading_engine:
+                te_on = self.trading_engine._enabled
+                te_emoji = '\U0001f7e2 ON' if te_on else '\U0001f534 OFF'
+                trade_status = f"\n\U0001f916 AutoTrade: *{te_emoji}*"
             return (
-                f"\U0001f916 *{coin} AI V9 \u2014 MULTI-COIN ENGINE*\n"
-                f"{status_emoji} Coin: *{coin}* | Mode: *{mode}*\n\n"
+                f"\U0001f916 *{coin} AI V10 \u2014 AUTONOMOUS TRADING ENGINE*\n"
+                f"{status_emoji} Coin: *{coin}* | Mode: *{mode}*{trade_status}\n\n"
+                f"*\U0001f916 V10 Auto-Trading:*\n"
+                "  /autotrade on \u2014 \U0001f7e2 Aktifkan AI Trading\n"
+                "  /autotrade off \u2014 \U0001f534 Matikan AI Trading\n"
+                "  /autotrade \u2014 Status trading engine\n"
+                "  /balance \u2014 Saldo Indodax\n"
+                "  /positions \u2014 Posisi terbuka\n"
+                "  /trades \u2014 Riwayat trade\n"
+                "  /performance \u2014 Win rate & P&L\n"
+                "  /stoploss \u2014 \U0001f6a8 Emergency close all\n"
+                "  /capital [jumlah] \u2014 Set modal\n\n"
                 f"*\U0001f4ca Market:*\n"
                 "  /status \u2014 Kondisi market\n"
                 "  /predict \u2014 Prediksi harga\n"
                 "  /analisa \u2014 Teknikal lengkap\n"
                 "  /sinyal \u2014 Sinyal AI\n"
                 "  /ml \u2014 Sinyal ML\n\n"
-                f"*\U0001f504 V9 Multi-Coin:*\n"
+                f"*\U0001f504 Multi-Coin:*\n"
                 "  /switch [coin] \u2014 Ganti coin\n"
                 "  /coins \u2014 Daftar coin Indodax\n"
-                "  /scan \u2014 Scan semua coin\n"
-                "  /scan [coin] \u2014 Detail scan 1 coin\n\n"
-                f"*\u2699\ufe0f V9 Control:*\n"
-                "  /mode [mode] \u2014 Ubah mode operasi\n"
-                "  /threshold [%] \u2014 Set min confidence\n"
-                "  /accuracy \u2014 Akurasi prediksi\n"
-                "  /activate | /deactivate \u2014 On/Off sistem\n\n"
+                "  /scan \u2014 Scan semua coin\n\n"
                 f"*\U0001f4c8 Institutional:*\n"
-                "  /tf \u2014 Multi-Timeframe (7 TF)\n"
-                "  /depth \u2014 Order book + walls\n"
-                "  /spread \u2014 Bid/Ask spread\n"
+                "  /tf \u2014 Multi-Timeframe\n"
+                "  /depth \u2014 Order book\n"
                 "  /sentiment \u2014 Sentiment score\n"
                 "  /manipulasi \u2014 Manipulation scan\n"
-                "  /plan \u2014 Full trade plan\n"
-                "  /winrate \u2014 Signal performance\n\n"
-                f"*\U0001f4c8 Advanced:*\n"
-                "  /risk \u2014 Sharpe, MaxDD, WinRate\n"
-                "  /whale \u2014 Whale tracker\n"
-                "  /news \u2014 Berita & fundamental\n"
-                "  /target [harga] \u2014 Price alert\n"
-                "  /stats \u2014 Statistik bot\n\n"
+                "  /plan \u2014 Full trade plan\n\n"
+                f"*\u2699\ufe0f Control:*\n"
+                "  /activate | /deactivate \u2014 On/Off sistem\n"
+                "  /mode [mode] \u2014 Ubah mode operasi\n"
+                "  /threshold [%] \u2014 Set min confidence\n\n"
                 "\U0001f4ac *CHAT BEBAS:* Tanya apa saja!\n"
-                "_V9: Multi-Coin AI Trading Engine_"
+                "_V10: Autonomous AI Trading Engine_"
             )
+
 
         # ===== V8: INSTITUTIONAL COMMANDS =====
         if t in ['/tf', '/timeframe', '/multi', 'tf', 'timeframe']:

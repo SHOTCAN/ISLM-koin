@@ -844,9 +844,13 @@ class TradingEngine:
     def _scan_and_trade(self):
         """
         Enhanced scan pipeline:
-        1. Circuit breaker → 2. Scan market → 3. Deep signal analysis
-        → 4. Confidence check → 5. Position sizing → 6. Execute
+        1. AutoTrade guard → 2. Circuit breaker → 3. Scan market
+        → 4. Deep signal analysis → 5. Confidence → 6. Position sizing → 7. Execute
         """
+        # === CRITICAL SAFETY: Double-check AutoTrade is enabled ===
+        if not self._enabled:
+            return
+
         # Circuit breaker check
         is_safe, reason = self.circuit_breaker.check(self.journal, self.capital)
         if not is_safe:
@@ -923,8 +927,14 @@ class TradingEngine:
 
     def _execute_buy(self, pair, price, amount_idr, confidence, factors,
                      sl_price=None, tp_price=None, regime='UNKNOWN'):
+        # === CRITICAL SAFETY: Never place order if AutoTrade is OFF ===
+        if not self._enabled:
+            print(f"[SAFETY] _execute_buy BLOCKED — AutoTrade is OFF")
+            return False
+
         trade_id = str(uuid.uuid4())
         try:
+            print(f"[Trade] Placing BUY order: {pair} @ Rp{price:,.0f} | Rp{amount_idr:,.0f} | conf={confidence}%")
             result = self.trade_api.create_order(
                 pair=pair, order_type='buy', price=price, amount_idr=amount_idr,
             )
