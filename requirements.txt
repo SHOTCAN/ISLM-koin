@@ -1,9 +1,7 @@
-streamlit
-pandas
-plotly
-numpy
 requests
 python-dotenv
+numpy
+pandas
 scikit-learn
 ta
 groq
