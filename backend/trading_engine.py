@@ -39,7 +39,7 @@ class TradingConfig:
 
     # === Signal Thresholds (VERY STRICT — only trade when very confident) ===
     MIN_CONFIDENCE_TO_TRADE = 75       # Min 75% confidence to open trade
-    MIN_SCAN_SCORE = 60                # Min scanner score
+    MIN_SCAN_SCORE = 45                # Lowered: scanner V3 pre-filters heavily
     MIN_SIGNAL_AGREEMENT = 3           # Min factors agreeing (of 5+)
     CONFIDENCE_BOOST_MULTI_TF = 5      # Boost if multi-TF aligns
 
@@ -861,31 +861,32 @@ class TradingEngine:
         if open_count >= TradingConfig.MAX_OPEN_POSITIONS:
             return
 
-        # Scan for candidates
-        top_coins = self.scanner.get_top_coins(5)
+        # Scan for candidates (fast — single API call)
+        top_coins = self.scanner.get_top_coins(3)  # Only top 3 to minimize API calls
 
         for coin in top_coins:
+            # Scanner already filtered volume/spread/falling — just check score
             if coin['score'] < TradingConfig.MIN_SCAN_SCORE:
-                continue
-            if coin['volume_idr'] < TradingConfig.MIN_VOLUME_IDR:
-                continue
-            if coin['spread_pct'] > TradingConfig.MAX_SPREAD_PCT:
                 continue
 
             # No duplicate positions
             if any(t.get('pair') == coin['pair'] for t in self.journal.get_open_trades()):
                 continue
 
+            print(f"[Engine] Deep-analyzing {coin['coin']} (score={coin['score']}, vol=Rp{coin['volume_idr']/1e6:.0f}M)")
+
             # === DEEP SIGNAL ANALYSIS (the V2 brain with AI learning) ===
             ml_weights = self.learner.get_factor_adjustments()
             analysis = self.signal_analyzer.analyze_coin(coin['pair'], dynamic_weights=ml_weights)
 
             if not analysis['should_trade']:
+                print(f"[Engine] {coin['coin']}: SKIP — {analysis.get('reasons', ['no signal'])}")
                 continue
 
             # Dynamic confidence threshold (adjusted by learner)
             threshold = self.learner.get_adjusted_threshold()
             if analysis['confidence'] < threshold:
+                print(f"[Engine] {coin['coin']}: SKIP — conf {analysis['confidence']} < threshold {threshold}")
                 continue
 
             # Slippage protection: check if bid/ask is reasonable vs last price
@@ -897,6 +898,7 @@ class TradingEngine:
                     if last > 0 and ask > 0:
                         slippage = abs(ask - last) / last * 100
                         if slippage > TradingConfig.MAX_SLIPPAGE_PCT:
+                            print(f"[Engine] {coin['coin']}: SKIP — slippage {slippage:.2f}%")
                             continue
             except Exception:
                 pass
@@ -904,6 +906,7 @@ class TradingEngine:
             # Position sizing
             position_idr = self.capital.calculate_position_size()
             if position_idr < 15000:
+                print(f"[Engine] SKIP — position size too small: Rp{position_idr:,.0f}")
                 continue
 
             # Re-check circuit breaker
@@ -924,6 +927,7 @@ class TradingEngine:
             )
 
             break  # One trade per cycle
+
 
     def _execute_buy(self, pair, price, amount_idr, confidence, factors,
                      sl_price=None, tp_price=None, regime='UNKNOWN'):
