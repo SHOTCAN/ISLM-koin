@@ -347,14 +347,23 @@ class SignalAnalyzer:
             self.market_regime = MarketRegimeDetector()
             self._has_regime = True
         except Exception as e:
-            print(f"[Signal] market_scanner regime import failed: {e}")
+            print(f"[Signal] market_regime import failed: {e}")
             self._has_regime = False
 
-    def analyze_coin(self, pair):
+        try:
+            from backend.news_sentiment import NewsSentimentEngine
+            self.sentiment = NewsSentimentEngine()
+            self._has_sentiment = True
+        except Exception as e:
+            print(f"[Signal] sentiment engine import failed: {e}")
+            self._has_sentiment = False
+
+    def analyze_coin(self, pair, dynamic_weights=None):
         """
-        Deep analysis of a single coin using all modules.
+        Deep analysis of a single coin using all modules (ML-weighted).
         Returns: {should_trade, confidence, direction, reasons, sl_price, tp_price}
         """
+        dynamic_weights = dynamic_weights or {}
         result = {
             'should_trade': False, 'confidence': 0, 'direction': 'none',
             'reasons': [], 'sl_price': None, 'tp_price': None,
@@ -523,7 +532,34 @@ class SignalAnalyzer:
                 except Exception:
                     pass
 
-            # 8. Calculate dynamic SL/TP using ATR
+            # 8. Sentiment Analysis Integration
+            if self._has_sentiment:
+                try:
+                    sent = self.sentiment.analyze_coin_sentiment(pair.replace('idr', ''))
+                    sent_score = sent.get('score', 0)
+                    if sent_score > 0.5:
+                        result['confidence'] += 3
+                        result['reasons'].append("Bullish sentiment: +3 conf")
+                        result['factors']['sentiment'] = 1.0
+                    elif sent_score < -0.5:
+                        result['confidence'] -= 5
+                        result['reasons'].append("Bearish sentiment: -5 conf")
+                        result['factors']['sentiment'] = -1.0
+                except Exception:
+                    pass
+
+            # 9. Apply Continuous Learning (Dynamic Weights)
+            if dynamic_weights:
+                adjustment = 0
+                for factor, weight in dynamic_weights.items():
+                    if factor in result['factors'] and result['factors'][factor] > 0:
+                        adjustment += weight
+                
+                if adjustment != 0:
+                    result['confidence'] += adjustment
+                    result['reasons'].append(f"AI Learning Adjust: {adjustment:+.1f}")
+
+            # 10. Calculate dynamic SL/TP using ATR
             if atr > 0:
                 result['sl_price'] = round(current_price - (atr * TradingConfig.ATR_SL_MULTIPLIER), 2)
                 result['tp_price'] = round(current_price + (atr * TradingConfig.ATR_TP_MULTIPLIER), 2)
@@ -655,6 +691,10 @@ class PostTradeAnalyzer:
         base = TradingConfig.MIN_CONFIDENCE_TO_TRADE
         offset = self._state.get('confidence_threshold_offset', 0)
         return base + offset
+
+    def get_factor_adjustments(self):
+        """Get ML-tuned weight adjustments for factors."""
+        return self._state.get('factor_adjustments', {})
 
     def get_learning_summary(self):
         total = self._state.get('total_analyzed', 0)
@@ -832,8 +872,9 @@ class TradingEngine:
             if any(t.get('pair') == coin['pair'] for t in self.journal.get_open_trades()):
                 continue
 
-            # === DEEP SIGNAL ANALYSIS (the V2 brain) ===
-            analysis = self.signal_analyzer.analyze_coin(coin['pair'])
+            # === DEEP SIGNAL ANALYSIS (the V2 brain with AI learning) ===
+            ml_weights = self.learner.get_factor_adjustments()
+            analysis = self.signal_analyzer.analyze_coin(coin['pair'], dynamic_weights=ml_weights)
 
             if not analysis['should_trade']:
                 continue
