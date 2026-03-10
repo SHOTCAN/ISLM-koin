@@ -1094,6 +1094,11 @@ class StandaloneBot:
             return "\u274c Gagal ambil daftar coin."
 
         # ===== V9: MARKET SCANNER =====
+        if t in ['/watchlist', '/wl']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            return self.trading_engine.scanner.get_watchlist_summary()
+
         if t.startswith('/scan'):
             parts = text.strip().split()
             if len(parts) >= 2:

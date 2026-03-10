@@ -1,59 +1,77 @@
 """
-Coin Scanner V3 — Fast Pre-Filter + Smart Ranking
-===================================================
-2-Stage scan for maximum speed:
+Coin Scanner V4 — Multi-Tier Market Intelligence
+==================================================
+3-tier architecture for speed + precision:
 
-  Stage 1: INSTANT PRE-FILTER (single API call, ~200ms)
-    - get_summaries() → all pairs at once
-    - Reject: dead coins, dust, no volume, inactive, falling
-    - ~300 pairs filtered to ~15-30 candidates in milliseconds
+  Tier 1: BROAD SCAN (every 30-45s, 1 API call)
+    get_summaries() → instant pre-filter → score → top 10
+    Cost: ~200ms, zero kline calls
 
-  Stage 2: SCORING + RANKING (zero extra API calls)
-    - Score remaining candidates on 6 factors
-    - Micro-trend tracking between scans
-    - Return top N sorted by score
+  Tier 2: WATCHLIST (persistent across scans)
+    Coins that appear in top-10 for 2+ consecutive scans = "hot"
+    Tracks score velocity (rising/falling momentum)
+    Coins that drop off for 3 scans = removed from watchlist
 
-The deep AI analysis (get_kline, multi-TF, etc.) happens ONLY
-for the top 3 coins in the trading engine — NOT here.
+  Tier 3: READY-TO-TRADE trigger
+    Watchlist coins with rising velocity + score > threshold
+    → flagged as "ready for deep analysis"
+    Trading engine ONLY calls get_kline on these coins
+
+The expensive deep AI analysis (get_kline, multi-TF, manipulation
+check) is NEVER called from this scanner. It's called by the
+trading engine only for Tier-3 flagged coins.
+
+This architecture means:
+  - 300+ pairs scanned in <200ms
+  - Only 2-3 coins get expensive deep analysis per cycle
+  - Momentum shifts detected across scan intervals
 """
 
 import time
 from datetime import datetime
 
 
-# Coins known to be stablecoins or wrapped assets (not worth trading)
+# Stablecoins / wrapped assets — never worth trading
 BLACKLIST = {
     'usdtidr', 'usdcidr', 'busdidr', 'daiusd', 'tusdidr',
-    'bidr', 'idrt', 'idrtidr',
+    'bidr', 'idrt', 'idrtidr', 'paxidr',
 }
 
 
 class CoinScanner:
-    """Fast 2-stage market scanner."""
+    """Multi-tier market scanner with watchlist promotion."""
 
-    # === Stage 1: Pre-Filter Thresholds ===
-    MIN_VOLUME_IDR = 5_000_000    # Rp5M (lowered to catch more candidates)
-    MIN_PRICE_IDR = 10            # Skip dust
-    MAX_SPREAD_PCT = 2.5          # Allow wider spread in pre-filter
-    MIN_PRICE_RANGE_PCT = 0.5     # Min 24h range as % of price (skip flat coins)
+    # === Pre-Filter Thresholds ===
+    MIN_VOLUME_IDR = 5_000_000     # Rp5M min daily volume
+    MIN_PRICE_IDR = 10             # Skip dust
+    MAX_SPREAD_PCT = 2.5           # Pre-filter spread
+    MIN_RANGE_PCT = 0.5            # Min 24h price range %
 
-    # === Stage 2: Scoring ===
-    IDEAL_VOLUME_IDR = 50_000_000  # Rp50M = full volume score
+    # === Scoring ===
+    IDEAL_VOLUME_IDR = 50_000_000  # Full volume score at Rp50M
     TOP_N = 10
+
+    # === Watchlist ===
+    WATCHLIST_PROMOTE_AFTER = 2    # Promote after 2 consecutive appearances
+    WATCHLIST_DEMOTE_AFTER = 3     # Remove after 3 consecutive absences
+    VELOCITY_BULLISH = 3.0         # Score increase > 3 per scan = bullish velocity
 
     def __init__(self, api):
         self.api = api
         self._last_scan = None
         self._last_results = []
-        self._scan_cooldown = 30   # Scan every 30s (fast enough now)
-        self._previous_prices = {}
+        self._scan_cooldown = 30
         self._scan_count = 0
+
+        # Tier 2: Watchlist state
+        self._watchlist = {}       # pair -> WatchlistEntry
+        self._previous_prices = {} # pair -> last known price
+        self._previous_scores = {} # pair -> last scan score
 
     def scan_market(self):
         """
-        2-stage scan: pre-filter → score → rank.
-        Uses ONLY 1 API call (get_summaries). Zero kline calls.
-        Returns sorted list of candidate dicts.
+        Tier 1: Broad scan + Tier 2: Watchlist update.
+        Returns top candidates sorted by effective score.
         """
         now = time.time()
         if self._last_scan and (now - self._last_scan) < self._scan_cooldown:
@@ -66,22 +84,18 @@ class CoinScanner:
 
         tickers = summaries.get('tickers', {})
         candidates = []
-        rejected = {'no_idr': 0, 'blacklist': 0, 'dust': 0, 'no_vol': 0,
-                     'no_bid_ask': 0, 'wide_spread': 0, 'flat': 0, 'falling': 0}
+        current_pairs = set()  # Track which pairs appear this scan
+        stats = {'total': 0, 'passed': 0, 'rejected': 0}
 
         for pair_id, data in tickers.items():
+            stats['total'] += 1
             try:
-                # ========== STAGE 1: INSTANT PRE-FILTER ==========
-
-                # IDR pairs only
+                # ========== TIER 1: INSTANT PRE-FILTER ==========
                 clean_pair = pair_id.replace('_', '').lower()
-                if not clean_pair.endswith('idr'):
-                    rejected['no_idr'] += 1
-                    continue
 
-                # Blacklist (stablecoins, wrapped tokens)
+                if not clean_pair.endswith('idr'):
+                    continue
                 if clean_pair in BLACKLIST:
-                    rejected['blacklist'] += 1
                     continue
 
                 last = float(data.get('last', 0))
@@ -90,7 +104,6 @@ class CoinScanner:
                 buy = float(data.get('buy', 0))
                 sell = float(data.get('sell', 0))
 
-                # Volume: try multiple field names (Indodax API inconsistency)
                 vol_idr = 0
                 for vk in ['vol_idr', 'vol_base', 'volume']:
                     v = data.get(vk)
@@ -100,73 +113,56 @@ class CoinScanner:
                             if vol_idr > 0:
                                 break
                         except (ValueError, TypeError):
-                            continue
+                            pass
 
-                # Filter 1: Dust coins
-                if last < self.MIN_PRICE_IDR:
-                    rejected['dust'] += 1
+                # Fast rejects
+                if last < self.MIN_PRICE_IDR or vol_idr < self.MIN_VOLUME_IDR:
                     continue
-
-                # Filter 2: Dead volume
-                if vol_idr < self.MIN_VOLUME_IDR:
-                    rejected['no_vol'] += 1
-                    continue
-
-                # Filter 3: No bid/ask (inactive order book)
                 if buy <= 0 or sell <= 0 or sell <= buy:
-                    rejected['no_bid_ask'] += 1
                     continue
 
-                # Filter 4: Wide spread
                 spread_pct = ((sell - buy) / buy) * 100
                 if spread_pct > self.MAX_SPREAD_PCT:
-                    rejected['wide_spread'] += 1
                     continue
 
-                # Filter 5: Flat coin (no movement)
                 if high <= low or high == 0:
-                    rejected['flat'] += 1
                     continue
                 price_range = high - low
                 range_pct = (price_range / low) * 100
-                if range_pct < self.MIN_PRICE_RANGE_PCT:
-                    rejected['flat'] += 1
+                if range_pct < self.MIN_RANGE_PCT:
                     continue
 
-                # Filter 6: Position in 24h range (reject bottom 25%)
                 position_in_range = (last - low) / price_range
-                if position_in_range < 0.25:
-                    rejected['falling'] += 1
+                if position_in_range < 0.20:  # Bottom 20% = definitely falling
                     continue
 
-                # ========== STAGE 2: SCORING (6 factors, 0-110) ==========
+                # ========== SCORING (max ~110) ==========
                 score = 0
                 factors = {}
 
-                # 1. Momentum: position in 24h range (max 25)
+                # 1. Momentum (max 25)
                 momentum = position_in_range * 25
                 score += momentum
                 factors['momentum'] = round(momentum, 1)
 
-                # 2. Volume strength (max 20)
+                # 2. Volume (max 20)
                 vol_score = min(20, (vol_idr / self.IDEAL_VOLUME_IDR) * 20)
                 score += vol_score
                 factors['volume'] = round(vol_score, 1)
 
                 # 3. Buy pressure (max 20)
-                buy_ratio = buy / sell
-                pressure = min(20, buy_ratio * 18)
+                pressure = min(20, (buy / sell) * 18)
                 score += pressure
                 factors['buy_pressure'] = round(pressure, 1)
 
                 # 4. Spread quality (max 15)
-                spread_quality = max(0, (self.MAX_SPREAD_PCT - spread_pct) / self.MAX_SPREAD_PCT * 15)
-                score += spread_quality
-                factors['spread'] = round(spread_quality, 1)
+                spread_q = max(0, (self.MAX_SPREAD_PCT - spread_pct) / self.MAX_SPREAD_PCT * 15)
+                score += spread_q
+                factors['spread'] = round(spread_q, 1)
 
                 # 5. Trend position (max 20)
                 if position_in_range > 0.85:
-                    trend = 20   # Near daily high
+                    trend = 20
                 elif position_in_range > 0.70:
                     trend = 15
                 elif position_in_range > 0.55:
@@ -178,35 +174,68 @@ class CoinScanner:
                 score += trend
                 factors['trend'] = trend
 
-                # 6. 24h change estimate (max 10)
-                mid_price = (high + low) / 2
-                change_pct = ((last - mid_price) / mid_price) * 100
+                # 6. 24h change (max 10)
+                mid = (high + low) / 2
+                change_pct = ((last - mid) / mid) * 100
                 if change_pct > 5:
-                    change_bonus = 10
+                    cb = 10
                 elif change_pct > 2:
-                    change_bonus = 7
+                    cb = 7
                 elif change_pct > 0:
-                    change_bonus = 4
+                    cb = 4
                 elif change_pct > -1:
-                    change_bonus = 1
+                    cb = 1
                 else:
-                    change_bonus = 0
-                score += change_bonus
-                factors['24h_change'] = change_bonus
+                    cb = 0
+                score += cb
+                factors['24h_change'] = cb
 
-                # Micro-trend bonus/penalty (between scans)
-                prev = self._previous_prices.get(clean_pair)
-                if prev and prev > 0:
-                    micro = ((last - prev) / prev) * 100
-                    if micro > 0.3:
+                # ========== TIER 2: VELOCITY TRACKING ==========
+                prev_score = self._previous_scores.get(clean_pair, score)
+                velocity = score - prev_score  # Positive = improving
+                self._previous_scores[clean_pair] = score
+                factors['velocity'] = round(velocity, 1)
+
+                # Micro-trend (price change since last scan)
+                prev_price = self._previous_prices.get(clean_pair)
+                micro_trend = 0
+                if prev_price and prev_price > 0:
+                    micro_trend = ((last - prev_price) / prev_price) * 100
+                    if micro_trend > 0.3:
                         score += 5
-                        factors['micro_trend'] = 5
-                    elif micro < -0.5:
+                        factors['micro'] = 5
+                    elif micro_trend < -0.5:
                         score -= 8
-                        factors['micro_trend'] = -8
+                        factors['micro'] = -8
                 self._previous_prices[clean_pair] = last
 
                 coin_name = clean_pair.replace('idr', '').upper()
+                current_pairs.add(clean_pair)
+
+                # Watchlist promotion check
+                is_watchlisted = clean_pair in self._watchlist
+                tier = 'scan'
+                if is_watchlisted:
+                    wl = self._watchlist[clean_pair]
+                    wl['consecutive_hits'] += 1
+                    wl['consecutive_misses'] = 0
+                    wl['last_score'] = score
+                    wl['velocity'] = velocity
+                    tier = 'watchlist'
+                    if wl['consecutive_hits'] >= self.WATCHLIST_PROMOTE_AFTER:
+                        if velocity >= self.VELOCITY_BULLISH or score > 60:
+                            tier = 'hot'
+                            wl['hot'] = True
+                else:
+                    # First appearance — add to watchlist tracker
+                    self._watchlist[clean_pair] = {
+                        'consecutive_hits': 1,
+                        'consecutive_misses': 0,
+                        'first_seen': datetime.utcnow().isoformat(),
+                        'last_score': score,
+                        'velocity': velocity,
+                        'hot': False,
+                    }
 
                 candidates.append({
                     'pair': clean_pair,
@@ -222,26 +251,48 @@ class CoinScanner:
                     'price_change_pct': round(change_pct, 2),
                     'range_pct': round(range_pct, 2),
                     'score': round(score, 1),
+                    'velocity': round(velocity, 1),
+                    'micro_trend': round(micro_trend, 3),
+                    'tier': tier,
                     'factors': factors,
                     'scanned_at': datetime.utcnow().isoformat(),
                 })
 
+                stats['passed'] += 1
+
             except (ValueError, TypeError, KeyError, ZeroDivisionError):
+                stats['rejected'] += 1
                 continue
 
-        # Sort by score descending
-        candidates.sort(key=lambda x: x['score'], reverse=True)
+        # Demote watchlist coins that disappeared
+        for pair in list(self._watchlist.keys()):
+            if pair not in current_pairs:
+                wl = self._watchlist[pair]
+                wl['consecutive_misses'] += 1
+                wl['consecutive_hits'] = 0
+                wl['hot'] = False
+                if wl['consecutive_misses'] >= self.WATCHLIST_DEMOTE_AFTER:
+                    del self._watchlist[pair]
+
+        # Sort: prioritize hot > watchlist > scan, then by score
+        tier_priority = {'hot': 0, 'watchlist': 1, 'scan': 2}
+        candidates.sort(key=lambda x: (tier_priority.get(x['tier'], 9), -x['score']))
+
         self._last_results = candidates[:self.TOP_N]
         self._last_scan = now
         self._scan_count += 1
 
         elapsed = round((time.time() - t0) * 1000)
-        total = len(tickers)
-        passed = len(candidates)
-        print(f"[Scanner] #{self._scan_count} | {total} pairs → {passed} passed → Top {len(self._last_results)} | {elapsed}ms | "
-              f"Rejected: vol={rejected['no_vol']} spread={rejected['wide_spread']} flat={rejected['flat']} fall={rejected['falling']}")
+        hot_count = sum(1 for c in candidates if c['tier'] == 'hot')
+        wl_count = sum(1 for c in candidates if c['tier'] == 'watchlist')
+        print(f"[Scanner] #{self._scan_count} | {stats['total']} pairs → {stats['passed']} passed "
+              f"| Hot: {hot_count} | Watchlist: {wl_count} | {elapsed}ms")
 
         return self._last_results
+
+    # ==========================================
+    #  PUBLIC API
+    # ==========================================
 
     def get_top_coin(self):
         results = self.scan_market()
@@ -251,19 +302,49 @@ class CoinScanner:
         results = self.scan_market()
         return results[:n]
 
+    def get_hot_coins(self):
+        """Get only Tier-3 (hot) coins ready for deep analysis."""
+        results = self.scan_market()
+        return [c for c in results if c['tier'] == 'hot']
+
+    def get_watchlist_coins(self):
+        """Get Tier-2 (watchlist) coins being tracked."""
+        results = self.scan_market()
+        return [c for c in results if c['tier'] in ('hot', 'watchlist')]
+
+    def get_watchlist_summary(self):
+        """Watchlist status for Telegram."""
+        wl = self._watchlist
+        if not wl:
+            return "📋 Watchlist kosong — belum ada koin yang muncul konsisten."
+
+        lines = ["📋 *Watchlist Status*", "━━━━━━━━━━━━━━━━━━━━━━"]
+        for pair, info in sorted(wl.items(), key=lambda x: -x[1].get('last_score', 0)):
+            hot = "🔥" if info.get('hot') else "👁️"
+            coin = pair.replace('idr', '').upper()
+            score = info.get('last_score', 0)
+            vel = info.get('velocity', 0)
+            hits = info.get('consecutive_hits', 0)
+            vel_emoji = "📈" if vel > 0 else ("📉" if vel < 0 else "➡️")
+            lines.append(
+                f"{hot} *{coin}* | Score: {score:.0f} | {vel_emoji} Vel: {vel:+.1f} | Hits: {hits}x"
+            )
+        return "\n".join(lines)
+
     def format_scan_report(self, top_n=5):
         coins = self.get_top_coins(top_n)
         if not coins:
             return "📡 Tidak ada koin yang memenuhi filter saat ini."
 
         lines = ["🔍 *Market Scan — Top Coins*", "━━━━━━━━━━━━━━━━━━━━━━"]
-        medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣']
+        tier_emoji = {'hot': '🔥', 'watchlist': '👁️', 'scan': '📡'}
         for i, c in enumerate(coins, 1):
-            medal = medals[i-1] if i <= 5 else f'{i}.'
-            trend_emoji = "📈" if c['price_change_pct'] > 0 else "📉"
+            te = tier_emoji.get(c['tier'], '📡')
+            trend = "📈" if c['price_change_pct'] > 0 else "📉"
+            vel = f" vel:{c['velocity']:+.0f}" if c['velocity'] != 0 else ""
             lines.append(
-                f"{medal} *{c['coin']}* — Score: {c['score']}/110\n"
-                f"   💰 Rp {c['price']:,.0f} | {trend_emoji} {c['price_change_pct']:+.1f}%\n"
-                f"   📊 Vol: Rp {c['volume_idr']/1e6:,.0f}M | Spread: {c['spread_pct']:.2f}% | Range: {c['range_pct']:.1f}%"
+                f"{i}. {te} *{c['coin']}* — Score: {c['score']:.0f}/110{vel}\n"
+                f"   💰 Rp {c['price']:,.0f} | {trend} {c['price_change_pct']:+.1f}%\n"
+                f"   📊 Vol: Rp {c['volume_idr']/1e6:,.0f}M | Spread: {c['spread_pct']:.2f}%"
             )
         return "\n".join(lines)

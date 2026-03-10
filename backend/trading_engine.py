@@ -861,10 +861,24 @@ class TradingEngine:
         if open_count >= TradingConfig.MAX_OPEN_POSITIONS:
             return
 
-        # Scan for candidates (fast — single API call)
-        top_coins = self.scanner.get_top_coins(3)  # Only top 3 to minimize API calls
+        # ========== MULTI-TIER SCAN ==========
+        # Priority: Hot coins (Tier 3) → Watchlist (Tier 2) → Top scan (Tier 1)
+        # Hot coins = confirmed momentum over multiple scans → deep analysis first
+        hot_coins = self.scanner.get_hot_coins()
+        if hot_coins:
+            trade_candidates = hot_coins[:3]
+            print(f"[Engine] 🔥 {len(hot_coins)} hot coins detected — prioritizing")
+        else:
+            watchlist = self.scanner.get_watchlist_coins()
+            if watchlist:
+                trade_candidates = watchlist[:3]
+                print(f"[Engine] 👁️ {len(watchlist)} watchlist coins — analyzing top 3")
+            else:
+                trade_candidates = self.scanner.get_top_coins(3)
+                print(f"[Engine] 📡 No hot/watchlist — using top 3 scan results")
 
-        for coin in top_coins:
+
+        for coin in trade_candidates:
             # Scanner already filtered volume/spread/falling — just check score
             if coin['score'] < TradingConfig.MIN_SCAN_SCORE:
                 continue
