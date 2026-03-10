@@ -13,6 +13,7 @@ venv/
 *.json
 !requirements.json
 !railway.json
+data/
 lockdown.flag
 *.flag
 

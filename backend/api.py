@@ -629,3 +629,187 @@ class IndodaxAPI:
                 'vol': round(random.uniform(500, 3000), 2)
             })
         return candles
+
+    # ==============================================
+    # TRADING METHODS (Buy / Sell / Orders)
+    # ==============================================
+
+    def create_order(self, pair, order_type, price, amount_idr=None, amount_coin=None):
+        """
+        Place a limit order on Indodax.
+        
+        Args:
+            pair: Trading pair (e.g., 'islmidr', 'btcidr')
+            order_type: 'buy' or 'sell'
+            price: Limit price in IDR
+            amount_idr: Amount in IDR (for buy orders)
+            amount_coin: Amount in coin (for sell orders)
+        
+        Returns:
+            dict with success status and order details
+        """
+        params = {
+            'pair': pair,
+            'type': order_type,
+            'price': str(int(price)),
+        }
+        
+        if order_type == 'buy':
+            if amount_idr is None:
+                return {'success': False, 'error': 'amount_idr required for buy orders'}
+            params['idr'] = str(int(amount_idr))
+        elif order_type == 'sell':
+            if amount_coin is None:
+                return {'success': False, 'error': 'amount_coin required for sell orders'}
+            # Extract coin name from pair (e.g., 'islmidr' -> 'islm')
+            coin = pair.replace('idr', '')
+            params[coin] = str(amount_coin)
+        else:
+            return {'success': False, 'error': f'Invalid order_type: {order_type}'}
+        
+        try:
+            result = self._private('trade', params)
+            if result.get('success') == 1:
+                ret = result.get('return', {})
+                return {
+                    'success': True,
+                    'order_id': ret.get('order_id'),
+                    'receive_coin': ret.get('receive_' + pair.replace('idr', ''), 0),
+                    'spend_idr': ret.get('spend_rp', 0),
+                    'balance': ret.get('balance', {}),
+                    'raw': ret,
+                }
+            return {'success': False, 'error': result.get('error', 'Trade failed')}
+        except Exception as e:
+            return {'success': False, 'error': f'Trade API error: {e}'}
+
+    def cancel_order(self, pair, order_id, order_type):
+        """Cancel a pending order."""
+        try:
+            result = self._private('cancelOrder', {
+                'pair': pair,
+                'order_id': str(order_id),
+                'type': order_type,
+            })
+            if result.get('success') == 1:
+                return {'success': True, 'order_id': order_id}
+            return {'success': False, 'error': result.get('error', 'Cancel failed')}
+        except Exception as e:
+            return {'success': False, 'error': f'Cancel API error: {e}'}
+
+    def get_open_orders(self, pair=None):
+        """Get all open/pending orders."""
+        try:
+            params = {}
+            if pair:
+                params['pair'] = pair
+            result = self._private('openOrders', params)
+            if result.get('success') == 1:
+                orders = result.get('return', {}).get('orders', [])
+                return {'success': True, 'orders': orders if orders else []}
+            return {'success': False, 'error': result.get('error', 'Failed'), 'orders': []}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'orders': []}
+
+    def get_order_history(self, pair, count=10):
+        """Get completed order history."""
+        try:
+            result = self._private('orderHistory', {'pair': pair, 'count': str(count)})
+            if result.get('success') == 1:
+                return {
+                    'success': True,
+                    'orders': result.get('return', {}).get('orders', [])
+                }
+            return {'success': False, 'error': result.get('error', 'Failed'), 'orders': []}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'orders': []}
+
+    def get_trade_history(self, pair, count=10):
+        """Get trade execution history."""
+        try:
+            result = self._private('tradeHistory', {'pair': pair, 'count': str(count)})
+            if result.get('success') == 1:
+                return {
+                    'success': True,
+                    'trades': result.get('return', {}).get('trades', [])
+                }
+            return {'success': False, 'error': result.get('error', 'Failed'), 'trades': []}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'trades': []}
+
+    def get_all_pairs(self):
+        """Get all available trading pairs on Indodax for market scanning."""
+        try:
+            r = self._timed_get('https://indodax.com/api/pairs')
+            if r.status_code == 200:
+                pairs = r.json()
+                return {
+                    'success': True,
+                    'pairs': [
+                        {
+                            'id': p.get('id', ''),
+                            'symbol': p.get('symbol', ''),
+                            'base_currency': p.get('base_currency', ''),
+                            'traded_currency': p.get('traded_currency', ''),
+                            'description': p.get('description', ''),
+                            'ticker_id': p.get('ticker_id', ''),
+                            'trade_min_base_currency': float(p.get('trade_min_base_currency', 0)),
+                            'trade_min_traded_currency': float(p.get('trade_min_traded_currency', 0)),
+                            'price_round': int(p.get('price_round', 0)),
+                            'is_maintenance': p.get('is_maintenance', 0),
+                        }
+                        for p in pairs
+                        if p.get('is_maintenance', 0) == 0  # Skip maintenance pairs
+                    ]
+                }
+            return {'success': False, 'error': f'HTTP {r.status_code}'}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'pairs': []}
+
+    def get_summaries(self):
+        """Get price summaries for ALL pairs (bulk market scan)."""
+        try:
+            r = self._timed_get('https://indodax.com/api/summaries')
+            if r.status_code == 200:
+                data = r.json()
+                tickers = data.get('tickers', {})
+                return {'success': True, 'tickers': tickers}
+            return {'success': False, 'error': f'HTTP {r.status_code}'}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'tickers': {}}
+
+
+# ============================================
+# TRADE-DEDICATED API CLIENT (Separate Keys)
+# ============================================
+
+class IndodaxTradeAPI(IndodaxAPI):
+    """
+    Dedicated API client for TRADE operations.
+    Uses separate API keys with trade permissions.
+    Inherits all analysis methods from IndodaxAPI.
+    """
+
+    def __init__(self, trade_api_key, trade_secret_key):
+        super().__init__(trade_api_key, trade_secret_key)
+        self._is_trade_client = True
+        print("[TradeAPI] Initialized with dedicated trade keys")
+
+    def verify_trade_access(self):
+        """Verify that the API keys have trade permissions."""
+        try:
+            result = self._private('getInfo')
+            if result.get('success') == 1:
+                info = result.get('return', {})
+                rights = info.get('rights', {})
+                return {
+                    'success': True,
+                    'can_trade': rights.get('trade', 0) == 1,
+                    'can_withdraw': rights.get('withdraw', 0) == 1,
+                    'server_time': info.get('server_time'),
+                    'balance_idr': float(info.get('balance', {}).get('idr', 0)),
+                }
+            return {'success': False, 'error': result.get('error', 'Auth failed')}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+

@@ -33,9 +33,13 @@ def _get(key, default=''):
 
 
 class Config:
-    # Indodax API (Private)
+    # Indodax API (Read-Only / Analysis)
     API_KEY = _get('INDODAX_API_KEY')
     SECRET_KEY = _get('INDODAX_SECRET_KEY')
+
+    # Indodax API (Trade — Autonomous Engine)
+    TRADE_API_KEY = _get('INDODAX_TRADE_API_KEY')
+    TRADE_SECRET_KEY = _get('INDODAX_TRADE_SECRET_KEY')
 
     # Telegram Bot
     TELEGRAM_TOKEN = _get('TELEGRAM_TOKEN')

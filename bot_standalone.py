@@ -121,6 +121,29 @@ class StandaloneBot:
         )
         self.security = SecurityEngine(self.token, self.chat_id)
 
+        # V10: Autonomous Trading Engine
+        try:
+            from backend.api import IndodaxTradeAPI
+            from backend.trading_engine import TradingEngine
+            trade_key = Config.TRADE_API_KEY or os.environ.get('INDODAX_TRADE_API_KEY', '')
+            trade_secret = Config.TRADE_SECRET_KEY or os.environ.get('INDODAX_TRADE_SECRET_KEY', '')
+            if trade_key and trade_secret:
+                self.trade_api = IndodaxTradeAPI(trade_key, trade_secret)
+                self.trading_engine = TradingEngine(
+                    trade_api=self.trade_api,
+                    analysis_api=self.api,
+                    notifier=lambda txt: self.send_message(txt),
+                )
+                safe_print("[V10] Trading Engine initialized OK")
+            else:
+                self.trade_api = None
+                self.trading_engine = None
+                safe_print("[V10] No Trade API keys — Trading Engine disabled")
+        except Exception as e:
+            self.trade_api = None
+            self.trading_engine = None
+            safe_print(f"[V10] Trading Engine init failed: {e}")
+
         # V9: Master Control & Dynamic Pair
         self.system_active = True
         self.active_pair = DEFAULT_PAIR
@@ -130,6 +153,8 @@ class StandaloneBot:
         self.scanner = MarketScanner()
         self.predictor = PredictionTracker()
         self._last_scan_time = 0
+        self._last_prediction_log = {}
+        self._prediction_log_interval = 3600  # Log adaptive predictions max once/hour/horizon
 
         # Interval timers
         self.last_30min = 0
@@ -308,6 +333,70 @@ class StandaloneBot:
         except:
             return {}
 
+    def _enhance_predictions(self, price, price_list, predictions):
+        """Blend baseline Monte Carlo with adaptive predictor output."""
+        if not predictions:
+            return predictions
+
+        horizon_map = {
+            '1_hari': {'hours': 24, 'threshold': 1.2},
+            '3_hari': {'hours': 72, 'threshold': 2.5},
+            '7_hari': {'hours': 168, 'threshold': 4.0},
+        }
+
+        now = time.time()
+        for key, cfg in horizon_map.items():
+            if key not in predictions:
+                continue
+
+            try:
+                log_key = f"{self.active_coin}:{cfg['hours']}"
+                should_log = (now - self._last_prediction_log.get(log_key, 0)) >= self._prediction_log_interval
+                adaptive = self.predictor.predict(
+                    coin=self.active_coin,
+                    prices=price_list,
+                    horizon_hours=cfg['hours'],
+                    log_prediction=should_log,
+                )
+                if should_log:
+                    self._last_prediction_log[log_key] = now
+
+                a_pred = adaptive.get('prediction', 0)
+                if a_pred <= 0:
+                    continue
+
+                base = predictions[key]
+                a_conf = float(adaptive.get('confidence', 50))
+                blend_weight = min(0.55, max(0.22, a_conf / 180.0))
+
+                target = base['target'] * (1 - blend_weight) + a_pred * blend_weight
+                low = base['low'] * (1 - blend_weight) + adaptive.get('range_low', base['low']) * blend_weight
+                high = base['high'] * (1 - blend_weight) + adaptive.get('range_high', base['high']) * blend_weight
+
+                if low > high:
+                    low, high = high, low
+
+                change_pct = (target - price) / (price + 1e-10) * 100
+                threshold = cfg['threshold']
+                if change_pct > threshold:
+                    direction = "NAIK"
+                elif change_pct < -threshold:
+                    direction = "TURUN"
+                else:
+                    direction = "SIDEWAYS"
+
+                base['target'] = float(target)
+                base['low'] = float(low)
+                base['high'] = float(high)
+                base['change_pct'] = float(change_pct)
+                base['direction'] = direction
+                base['confidence'] = float(min(95, max(base.get('confidence', 50), a_conf * 0.85)))
+                base['model_blend'] = f"mc+adaptive ({blend_weight:.2f})"
+
+            except Exception as e:
+                safe_print(f"[PRED-BLEND-ERR] {e}")
+
+        return predictions
     # ============================================
     # CORE: Full Analysis Pipeline
     # ============================================
@@ -390,9 +479,10 @@ class StandaloneBot:
                 pro_ta=pro_ta, ml_result=ml_result,
             )
 
-            # Predictions
+            # Predictions (baseline + adaptive blend)
             price_list = [c['close'] for c in candles[-100:]]
             predictions = MarketProjector.predict_multi_horizon(price, price_list)
+            predictions = self._enhance_predictions(price, price_list, predictions)
 
             # ===== V8: INSTITUTIONAL ANALYSIS =====
             try:
@@ -839,6 +929,102 @@ class StandaloneBot:
                 "\U0001f534 *SISTEM MATI*\n"
                 "Ketik /activate untuk aktifkan kembali."
             )
+
+        # ===== V10: AUTONOMOUS TRADING COMMANDS =====
+        if t in ['/autotrade on', '/autotrade_on', '/trade on']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia (API key belum dikonfigurasi)."
+            self.trading_engine.enable()
+            return None  # Engine sends its own notification
+
+        if t in ['/autotrade off', '/autotrade_off', '/trade off']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            self.trading_engine.disable()
+            return None
+
+        if t in ['/autotrade', '/trade_status']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            return self.trading_engine.format_status()
+
+        if t in ['/balance', '/saldo']:
+            if not self.trade_api:
+                return "\u274c Trade API tidak tersedia."
+            bal = self.trade_api.get_balance()
+            if bal.get('success'):
+                return (
+                    "\U0001f4b0 *Saldo Indodax*\n"
+                    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                    f"\U0001f4b5 IDR: Rp {bal.get('idr', 0):,.0f}\n"
+                    f"\U0001f4b0 ISLM: {bal.get('islm', 0):,.4f} (hold: {bal.get('islm_hold', 0):,.4f})"
+                )
+            return f"\u274c Gagal ambil saldo: {bal.get('error')}"
+
+        if t in ['/positions', '/posisi']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            positions = self.trading_engine.monitor.get_positions_summary()
+            if not positions:
+                return "\U0001f4ed Tidak ada posisi terbuka."
+            lines = ["\U0001f4cb *Posisi Terbuka*\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"]
+            for p in positions:
+                emoji = "\U0001f7e2" if p['change_pct'] > 0 else "\U0001f534"
+                trail = " \U0001f504" if p['trailing'] else ""
+                lines.append(
+                    f"{emoji} *{p['pair'].replace('idr','').upper()}*{trail}\n"
+                    f"   Entry: Rp {p['entry']:,.0f} | Now: Rp {p['current']:,.0f}\n"
+                    f"   P&L: {p['change_pct']:+.2f}% | Size: Rp {p['amount_idr']:,.0f}"
+                )
+            return "\n".join(lines)
+
+        if t in ['/trades', '/history_trade']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            recent = self.trading_engine.journal.get_recent_trades(10)
+            if not recent:
+                return "\U0001f4ed Belum ada trade."
+            lines = ["\U0001f4cb *10 Trade Terakhir*\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501"]
+            for t_item in recent:
+                status = t_item.get('status', 'unknown')
+                pnl = t_item.get('pnl_idr')
+                coin = t_item.get('pair', '').replace('idr', '').upper()
+                if status == 'closed' and pnl is not None:
+                    emoji = "\U0001f7e2" if pnl > 0 else "\U0001f534"
+                    lines.append(f"{emoji} {coin} | Rp {pnl:,.0f} ({t_item.get('pnl_pct', 0):+.2f}%) | {t_item.get('exit_reason', '')}")
+                else:
+                    lines.append(f"\u23f3 {coin} | Open | Entry: Rp {t_item.get('entry_price', 0):,.0f}")
+            return "\n".join(lines)
+
+        if t in ['/performance', '/performa']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            return self.trading_engine.format_performance()
+
+        if t in ['/stoploss', '/emergency', '/darurat']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            count = self.trading_engine.emergency_close_all()
+            return f"\U0001f6a8 Emergency close: {count} posisi ditutup."
+
+        if t.startswith('/capital'):
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            parts = text.strip().split()
+            if len(parts) >= 2:
+                try:
+                    new_cap = int(parts[1].replace('.', '').replace(',', ''))
+                    self.trading_engine.capital.set_capital(new_cap)
+                    return f"\u2705 Modal trading diubah ke Rp {new_cap:,.0f}"
+                except ValueError:
+                    return "\u274c Format salah. Contoh: /capital 100000"
+            return f"\U0001f4bc Modal saat ini: Rp {self.trading_engine.capital.capital:,.0f}\n\nUntuk ubah: /capital [jumlah]"
+
+        if t in ['/scan', '/market']:
+            if not self.trading_engine:
+                return "\u274c Trading Engine tidak tersedia."
+            return self.trading_engine.scanner.format_scan_report(5)
+
 
         # ===== V9: DYNAMIC COIN SWITCHING =====
         if t.startswith('/switch') or t.startswith('/ganti'):
@@ -2725,9 +2911,27 @@ class StandaloneBot:
 
                 # V9: Evaluate prediction accuracy
                 try:
+                    current_prices = {}
+
+                    # Always include active coin from latest cache.
                     price = self._cache.get('price', 0)
                     if price > 0:
-                        current_prices = {self.active_coin: price}
+                        current_prices[self.active_coin] = price
+
+                    # Also include all due coins so multi-coin predictions get evaluated on time.
+                    due_coins = self.predictor.get_due_coins()
+                    extra_coins = [c for c in due_coins if c != self.active_coin]
+                    if extra_coins:
+                        pairs = [f"{coin.lower()}idr" for coin in extra_coins]
+                        multi_prices = self.api.get_multi_price(pairs)
+                        for coin in extra_coins:
+                            pair = f"{coin.lower()}idr"
+                            pair_data = multi_prices.get(pair, {})
+                            last_price = float(pair_data.get('last', 0) or 0)
+                            if last_price > 0:
+                                current_prices[coin] = last_price
+
+                    if current_prices:
                         evald = self.predictor.evaluate_pending(current_prices)
                         if evald > 0:
                             safe_print(f"[V9] Evaluated {evald} predictions")
