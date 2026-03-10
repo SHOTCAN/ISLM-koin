@@ -813,3 +813,26 @@ class IndodaxTradeAPI(IndodaxAPI):
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
+    def get_balance(self):
+        """Get account balance (IDR + all coin holdings)."""
+        try:
+            result = self._private('getInfo')
+            if result.get('success') == 1:
+                info = result.get('return', {})
+                balance = info.get('balance', {})
+                balance_hold = info.get('balance_hold', {})
+                return {
+                    'success': True,
+                    'idr': float(balance.get('idr', 0)),
+                    'idr_hold': float(balance_hold.get('idr', 0)),
+                    'islm': float(balance.get('islm', 0)),
+                    'islm_hold': float(balance_hold.get('islm', 0)),
+                    'btc': float(balance.get('btc', 0)),
+                    'eth': float(balance.get('eth', 0)),
+                    'all_balances': {k: float(v) for k, v in balance.items() if float(v) > 0},
+                }
+            return {'success': False, 'error': result.get('error', 'Auth failed')}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+

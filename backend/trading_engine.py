@@ -27,55 +27,55 @@ from datetime import datetime, timedelta
 
 
 class TradingConfig:
-    """All configurable trading parameters."""
+    """All configurable trading parameters — ULTRA-SAFE MODE."""
 
     # === Capital Management ===
     INITIAL_CAPITAL = 50_000           # Rp50,000 starting capital
-    MAX_RISK_PER_TRADE_PCT = 5.0       # Max 5% of capital per trade
-    MAX_EXPOSURE_TOTAL_PCT = 30.0      # Max 30% of capital in open positions
-    MAX_DAILY_LOSS_IDR = 10_000        # Stop trading if daily loss > Rp10k
-    MAX_DAILY_TRADES = 8               # Anti-overtrading
-    MAX_OPEN_POSITIONS = 3             # Max simultaneous positions
+    MAX_RISK_PER_TRADE_PCT = 3.0       # Max 3% of capital per trade (TIGHT)
+    MAX_EXPOSURE_TOTAL_PCT = 20.0      # Max 20% of capital in open positions
+    MAX_DAILY_LOSS_IDR = 5_000         # STOP if daily loss > Rp5k (very tight)
+    MAX_DAILY_TRADES = 5               # Max 5 trades/day
+    MAX_OPEN_POSITIONS = 2             # Max 2 simultaneous positions
 
-    # === Signal Thresholds (Strict) ===
-    MIN_CONFIDENCE_TO_TRADE = 65       # Minimum signal confidence (0-100)
-    MIN_SCAN_SCORE = 55                # Minimum coin scanner score
+    # === Signal Thresholds (VERY STRICT — only trade when very confident) ===
+    MIN_CONFIDENCE_TO_TRADE = 75       # Min 75% confidence to open trade
+    MIN_SCAN_SCORE = 60                # Min scanner score
     MIN_SIGNAL_AGREEMENT = 3           # Min factors agreeing (of 5+)
     CONFIDENCE_BOOST_MULTI_TF = 5      # Boost if multi-TF aligns
 
-    # === Stop Loss / Take Profit (Dynamic) ===
-    DEFAULT_SL_PCT = 3.0               # Fallback SL if ATR not available
-    DEFAULT_TP_PCT = 5.0               # Fallback TP
-    ATR_SL_MULTIPLIER = 1.5            # SL = entry - (ATR * 1.5)
-    ATR_TP_MULTIPLIER = 3.0            # TP = entry + (ATR * 3.0)
-    TRAILING_STOP_ACTIVATION_PCT = 2.0
-    TRAILING_STOP_DISTANCE_PCT = 1.5
+    # === Stop Loss / Take Profit (TIGHT — protect capital) ===
+    DEFAULT_SL_PCT = 2.0               # Tight 2% stop loss
+    DEFAULT_TP_PCT = 4.0               # 4% take profit (2:1 RR)
+    ATR_SL_MULTIPLIER = 1.2            # Tight ATR-based SL
+    ATR_TP_MULTIPLIER = 2.5            # ATR-based TP (2:1 ratio)
+    TRAILING_STOP_ACTIVATION_PCT = 1.2 # Activate trailing early at +1.2%
+    TRAILING_STOP_DISTANCE_PCT = 0.8   # Trail tightly by 0.8%
 
-    # === Partial Take-Profit ===
+    # === Partial Take-Profit (lock in profits fast) ===
     PARTIAL_TP_LEVELS = [
-        (2.0, 0.30),  # At +2%, sell 30%
-        (4.0, 0.40),  # At +4%, sell 40%
-        (7.0, 0.30),  # At +7%, sell remaining 30%
+        (1.5, 0.30),  # At +1.5%, secure 30%
+        (3.0, 0.40),  # At +3.0%, secure 40%
+        (5.0, 0.30),  # At +5.0%, close remaining
     ]
 
     # === Timing ===
-    SCAN_INTERVAL_SECONDS = 60         # Market scan every 60s
-    POSITION_CHECK_SECONDS = 10        # Check positions every 10s
-    DAILY_REPORT_HOUR_UTC = 17         # 00:00 WIB = 17:00 UTC
-    COOLDOWN_AFTER_LOSS_SECONDS = 300
-    COOLDOWN_AFTER_3_LOSSES = 1800
+    SCAN_INTERVAL_SECONDS = 45         # Scan every 45s
+    POSITION_CHECK_SECONDS = 8         # Check positions every 8s (fast reaction)
+    DAILY_REPORT_HOUR_UTC = 17         # 00:00 WIB
+    COOLDOWN_AFTER_LOSS_SECONDS = 600  # 10 min cooldown after loss
+    COOLDOWN_AFTER_3_LOSSES = 3600     # 1 HOUR cooldown after 3 losses
 
     # === Capital Scaling Gates ===
     SCALE_REQUIREMENTS = {
-        100_000: (10, 55.0, 1.3),
-        200_000: (25, 58.0, 1.5),
-        500_000: (50, 60.0, 1.8),
+        100_000: (15, 60.0, 1.5),      # Need 60% WR + 1.5 PF
+        200_000: (30, 62.0, 1.7),
+        500_000: (60, 65.0, 2.0),
     }
 
-    # === Filters ===
-    MAX_SPREAD_PCT = 2.0
-    MIN_VOLUME_IDR = 10_000_000
-    MAX_SLIPPAGE_PCT = 1.0             # Max acceptable slippage
+    # === Filters (STRICT) ===
+    MAX_SPREAD_PCT = 1.5               # Only liquid coins
+    MIN_VOLUME_IDR = 20_000_000        # Min Rp20M volume (liquid only)
+    MAX_SLIPPAGE_PCT = 0.5             # Very tight slippage control
 
 
 class CapitalManager:
